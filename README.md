@@ -1,4 +1,4 @@
-# BlockNes 1.4.0 beta
+# BlockNes 1.4.0 beta 
 
 A Minecraft: Pocket Edition **0.15.10** (protocol 84) server written in plain Java, with no external dependencies. It implements the MCPE network protocol and game logic in Java and includes a plugin API. Some mechanics may still differ from the original game.
 
