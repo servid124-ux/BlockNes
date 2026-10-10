@@ -1,4 +1,4 @@
-# BlockNes 1.0.0 beta
+# BlockNes 1.4.0 beta
 
 A Minecraft: Pocket Edition **0.15.10** (protocol 84) server written in plain Java, with no external dependencies. It implements the MCPE network protocol and game logic in Java and includes a plugin API. Some mechanics may still differ from the original game.
 
@@ -37,7 +37,7 @@ Run it from the folder where you want the server files to live.
 The console prints the name and version on startup, for example:
 
 ```
-Starting BlockNes 1.0.0 beta version 0.15.10 (MCPE protocol 84)
+Starting BlockNes 1.4.0 beta version 0.15.10 (MCPE protocol 84)
 ```
 
 Stop the server with `/stop` or Ctrl+C (both save players, worlds and items).
@@ -48,7 +48,11 @@ Stop the server with `/stop` or Ctrl+C (both save players, worlds and items).
 | --- | --- |
 | `server.properties` | Server configuration |
 | `ops.txt` | Operators (one name per line) |
-| `worlds/world/` | Overworld: `level.dat`, `region/` (chunks), `players.dat`, `items.dat`, `tiles.dat`, `enderchests.dat`, `seed.txt`. Worlds from older versions (`world/`, `world_nether/`) are moved here automatically on the first start |
+| `players/` | One file per player (`<name>.dat`): position, health, inventory. Also `enderchests.dat` (ender chests) |
+| `banned-players.txt` | Banned player names, one per line. Created at startup; managed with `ban` and `pardon` |
+| `banned-ips.txt` | Banned IP addresses, one per line. Managed with `ban-ip` and `pardon-ip` |
+| `white-list.txt` | White list names, one per line. Used when `white-list=on` |
+| `worlds/world/` | Overworld: `level.dat`, `region/` (chunks), `items.dat`, `mobs.dat`, `xp.dat`, `tiles.dat`, `seed.txt`, `time.txt`. Worlds from older versions (`world/`, `world_nether/`) are moved here automatically on the first start |
 | `worlds/nether/` | Nether: `level.dat`, `region/` (chunks) |
 | `plugins/` | Plugin `.jar` files, plugin data folders and `permissions.properties` |
 | `server.log` | Log file (rotated to `server.log.old` at about 5 MB) |
@@ -73,6 +77,10 @@ Missing keys are added automatically with their default value the next time the 
 | `level-seed` | *(empty)* | Seed; empty means random. Once `seed.txt` exists in the world folder, it wins |
 | `level-type` | `normal` | `normal`, `flat` or `nether` |
 | `language` | *(set by wizard)* | `eng`, `spa`, `por`, `fra`, `deu`, `ita` |
+| `pvp` | `on` | `off`: players cannot hit other players |
+| `spawn-mobs` | `on` | `off`: no natural mob spawns (spawn eggs and `/summon` still work) |
+| `white-list` | `off` | `on`: only the names in `white-list.txt` can join |
+| `pregenerate-radius` | `0` | Chunks around spawn generated at startup, before players join (0-16). `0` only prepares the spawn area. New chunks may get animals on grass |
 
 Invalid or out-of-range values fall back to a safe default and a warning is printed.
 
@@ -108,6 +116,10 @@ Commands work from the console (with or without `/`) and in-game chat (starting 
 | `/debug [on\|off]` | Show every damage / hunger change in your chat |
 | `/plugins` | List loaded plugins |
 | `/plugins reload` | Reload plugins (OP only) |
+| `ban <player>` / `pardon <player>` | Ban or pardon a player name (banned players are kicked) |
+| `ban-ip <ip>` / `pardon-ip <ip>` | Ban or pardon an IP address |
+| `banlist` | List banned players and IP addresses |
+| `whitelist <on\\|off\\|add\\|remove\\|list\\|reload> [player]` | Turn the white list on or off, edit it, or reload it |
 | `/stop` | Save and shut down |
 
 ---
@@ -116,7 +128,11 @@ Commands work from the console (with or without `/`) and in-game chat (starting 
 
 Plugins are `.jar` files placed in `plugins/`. They are loaded on startup and on `/plugins reload`. A plugin that crashes never takes the server down.
 
-The API version is `1.2` (`server().getApiVersion()`). Plugins built for earlier versions of this API keep loading, because the API only adds to what was there. Version 1.2 adds `p.getPing()` and the text above the head (`p.setNameTag()`, see *Player*); a plugin that uses them declares `api=1.2`.
+The API version is `1.3` (`server().getApiVersion()`). Plugins built for earlier versions of this API keep loading, because the API only adds to what was there. Version 1.2 adds `p.getPing()` and the text above the head (`p.setNameTag()`, see *Player*); a plugin that uses them declares `api=1.2`.
+
+Version 1.3 adds the access-control and server-setting helpers listed below (`banPlayer`, `whitelistAdd`, `isPvpEnabled`, ...). A plugin that declares `api=1.3` needs this version or newer; plugins for older versions keep loading.
+
+**Limits.** A handler that throws 100 times, or takes more than 100 ms in 1000 calls, disables its plugin; the server keeps running. A plugin can have up to 5000 pending tasks; more `runLater` or `runRepeating` calls throw an `IllegalStateException`.
 
 ### Plugin layout
 
@@ -193,6 +209,7 @@ Overloads: `on(type, handler)`, `on(type, priority, handler)`, `on(type, priorit
 | `ServerTick` | no | `tick` (20 per second) |
 | `PlayerPreLogin` | yes | `kickMessage` (editable); cancelling kicks the player before joining |
 | `PlayerKick` | yes | `reason` (editable) |
+| `EntityCombust` | yes | `eid`, `player` (`null` for mobs), `cause`, `seconds`. Cancelled = it does not catch fire |
 | `PlayerDropItem` | yes | `item`; cancelling gives the item back |
 | `PlayerItemConsume` | yes | `item` (eating / drinking) |
 | `PlayerBedEnter` / `PlayerBedLeave` | yes / no | `x`, `y`, `z` |
@@ -444,10 +461,15 @@ It is an emulation: the "scoreboard" is centered text, not a side panel, and the
 | `playerExact(name)` / `playersIn(dim)` | Exact-name lookup / players in one dimension |
 | `broadcast(msg, permission)` / `broadcastTip(msg)` / `broadcastPopup(msg)` | Chat message only to players with the permission / tip or popup to everyone |
 | `hasPermission(player, node)` | Permission check (see *Who has which permission*) |
+| `banPlayer(name)` / `pardonPlayer(name)` / `isBanned(name)` | Ban (kicks the player) / pardon / check a name (`banned-players.txt`) |
+| `banIp(ip)` / `pardonIp(ip)` / `isBannedIp(ip)` | Ban (kicks players from that IP) / pardon / check an IP (`banned-ips.txt`) |
+| `whitelistAdd(name)` / `whitelistRemove(name)` / `isWhitelisted(name)` | Edit / check the white list (`white-list.txt`) |
+| `setWhitelist(on)` / `isWhitelistOn()` | Turn the white list on or off / check it |
+| `isPvpEnabled()` / `isSpawnMobsEnabled()` | The `pvp` and `spawn-mobs` settings from `server.properties` |
 | `mobsIn(dim)` / `highestBlockAt(dim, x, z)` | Mobs in a dimension / top block at x, z |
 | `dropItem(dim, x, y, z, item)` / `explode(dim, x, y, z, size)` / `playLevelEvent(dim, x, y, z, id, data)` | Drop an item / explosion / a level event (sound or particle effect) |
 | `getFile()` / `dataFolder()` / `pluginManager()` / `plugins()` | Your jar / your folder / the plugin manager / loaded plugins |
-| `server().getServerVersion()` / `getGameVersion()` / `getProtocolVersion()` / `getApiVersion()` | Name and build (e.g. `BlockNes 1.0.0 beta`), `0.15.10`, `84`, `1.2` |
+| `server().getServerVersion()` / `getGameVersion()` / `getProtocolVersion()` / `getApiVersion()` | Name and build (e.g. `BlockNes 1.4.0 beta`), `0.15.10`, `84`, `1.3` |
 | `server().onlinePlayers()` / `getOps()` / `getConfigString(key, def)` / `getConfigInt` / `getConfigBoolean` | Players, operator names, values from `server.properties` |
 | `name()`, `version()`, `author()`, `description()` | Plugin metadata |
 
