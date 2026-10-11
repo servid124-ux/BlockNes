@@ -1,4 +1,4 @@
-# BlockNes 1.4.0 beta 
+# BlockNes 1.5.0 beta
 
 A Minecraft: Pocket Edition **0.15.10** (protocol 84) server written in plain Java, with no external dependencies. It implements the MCPE network protocol and game logic in Java and includes a plugin API. Some mechanics may still differ from the original game.
 
@@ -31,13 +31,14 @@ Run it from the folder where you want the server files to live.
 ### First run
 
 1. A short wizard asks for a language (`eng`, `spa`, `por`, `fra`, `deu`, `ita`). Press Enter for English. The choice is saved as `language=` in `server.properties`.
-2. `server.properties` is created with default values.
-3. The world is generated (`Preparing start region...`) and the console shows `Done`.
+2. The wizard asks `Do you want the guided setup and tutorial? [Y/n]` (in the language you picked). **Y** (or Enter) walks you through 14 steps with a progress bar and an explanation for each: server name (MOTD), port, game mode, difficulty, max players, world name, world type, seed, view distance, PvP, mob spawns, whitelist, spawn protection and your OP name. Enter keeps the default shown in `[brackets]`. It ends with a summary and quick usage tips. **N** skips it and keeps the factory settings.
+3. `server.properties` is created with default values.
+4. The world is generated (`Preparing start region...`) and the console shows `Done`.
 
 The console prints the name and version on startup, for example:
 
 ```
-Starting BlockNes 1.4.0 beta version 0.15.10 (MCPE protocol 84)
+Starting BlockNes 1.5.0 beta version 0.15.10 (MCPE protocol 84)
 ```
 
 Stop the server with `/stop` or Ctrl+C (both save players, worlds and items).
@@ -124,13 +125,26 @@ Commands work from the console (with or without `/`) and in-game chat (starting 
 
 ---
 
+## Plugin API tests
+
+On Linux, macOS, or Termux with JDK 11 or newer, run:
+
+```sh
+sh test.sh           # plugin API, lifecycle, HUD, menus, recipes, and examples
+sh test-network.sh   # longer UDP/RakNet integration test
+```
+
+Test plugin JARs are built in temporary directories; the scripts do not overwrite or remove installed plugins. Detailed logs are saved in `test-results/`.
+
 ## Plugin API
 
 Plugins are `.jar` files placed in `plugins/`. They are loaded on startup and on `/plugins reload`. A plugin that crashes never takes the server down.
 
-The API version is `1.3` (`server().getApiVersion()`). Plugins built for earlier versions of this API keep loading, because the API only adds to what was there. Version 1.2 adds `p.getPing()` and the text above the head (`p.setNameTag()`, see *Player*); a plugin that uses them declares `api=1.2`.
+The API version is `1.5` (`server().getApiVersion()`). Plugins built for earlier versions of this API keep loading, because the API only adds to what was there. Version 1.2 adds `p.getPing()` and the text above the head (`p.setNameTag()`, see *Player*); a plugin that uses them declares `api=1.2`.
 
 Version 1.3 adds the access-control and server-setting helpers listed below (`banPlayer`, `whitelistAdd`, `isPvpEnabled`, ...). A plugin that declares `api=1.3` needs this version or newer; plugins for older versions keep loading.
+
+Version 1.5 adds menus with buttons, recipes added by plugins, regions, per-player data, item names and lore, and argument helpers for commands (see *API 1.5 additions*). A plugin that uses them declares `api=1.5`; plugins for older versions keep loading.
 
 **Limits.** A handler that throws 100 times, or takes more than 100 ms in 1000 calls, disables its plugin; the server keeps running. A plugin can have up to 5000 pending tasks; more `runLater` or `runRepeating` calls throw an `IllegalStateException`.
 
@@ -158,7 +172,7 @@ loadbefore=SomePlugin
 - `softdepend`: loaded before yours if they exist.
 - `loadbefore`: your plugin is loaded before these, when they are present.
 - `prefix`: the text in brackets at the start of your log lines (default: the plugin name).
-- `api`: the minimum API version your plugin needs. This server has API `1.2`; a plugin that asks for a newer one is not loaded and a warning is printed.
+- `api`: the minimum API version your plugin needs. This server has API `1.5`; a plugin that asks for a newer one is not loaded and a warning is printed.
 - `permissions.<node>.…` and `commands.<name>.…` declare permissions and commands (see below).
 - An optional `config.properties` in the jar root is copied to `plugins/<Name>/config.properties` on first run.
 
@@ -172,7 +186,7 @@ public class HelloWorld extends Plugin {
 }
 ```
 
-Events, commands, tasks, permissions and attachments registered by a plugin are removed automatically after `onDisable()`.
+Events, commands, tasks, permissions and attachments registered by a plugin are removed automatically after `onDisable()`. Its menus are closed (their `onClose` runs), its recipes are removed and its player data is saved.
 
 Plugins can be switched individually without restarting: `/plugins disable <name>` (also disables plugins that `depend` on it) and `/plugins enable <name>` (OP only; re-reads the jar). `/plugins reload` still reloads everything.
 
@@ -221,6 +235,7 @@ Overloads: `on(type, handler)`, `on(type, priority, handler)`, `on(type, priorit
 | `PlayerToggleSneak` / `PlayerToggleSprint` | yes | `sneaking` / `sprinting` |
 | `InventoryOpen` | yes | `type` (`chest`, `enderchest`, `workbench`, `furnace`), `x`, `y`, `z` |
 | `InventoryClose` | no | `player` |
+| `MenuClick` | yes | `menu`, `slot`, `item` (what the slot held), `proposed` (what the client tried to put there). The change is always reverted; cancelling skips the slot's handler (API 1.5) |
 | `SignChange` | yes | `x`, `y`, `z`, `lines` (4, editable) |
 | `Explosion` | yes | `dimension`, `x`, `y`, `z`, `size`, `blocks` (`{x,y,z,id}` list; remove entries to save blocks) |
 | `ServerCommand` | yes | console only: `sender`, `line` (editable) |
@@ -419,24 +434,175 @@ json.reload();                                                    // read the fi
 ### HUD: titles, action bar, boss bars and scoreboard
 
 MCPE 0.15.10 has no title, boss bar or scoreboard packets, so the API emulates them on the two text channels the client does have:
-**tip** (center of the screen) and **popup** (above the hotbar). It redraws every 10 ticks, only resends when something changed, and removes everything a plugin registered when that plugin is disabled.
+**tip** (scoreboard and titles) and **popup** (above the hotbar). It redraws every 10 ticks, only resends when something changed, and removes everything a plugin registered when that plugin is disabled.
 
 ```java
 // scoreboard: one line per key, sorted by order; a global line is evaluated for every player
 hudLine("hp", 1, p -> "\u00a7cHP: " + p.health);
 hudLine(player, "money", 2, "\u00a76$" + balance);       // per-player line; text = null removes it
+hudLine(player, "combat", 3, "\u00a7cIn combat", 200);   // NEW: disappears by itself after 200 ticks
 hudRemove("hp");  hudRemove(player, "money");  hudClear(player);
+List<String> shown = hudLines(player);                    // NEW: scoreboard lines the player sees now (no padding)
 
 title(player, "\u00a7aWelcome", "\u00a77enjoy", 60);      // center, 60 ticks (covers the scoreboard while it lasts)
 actionBar(player, "\u00a7eSaved!", 40);                   // above the hotbar (covers boss bars while it lasts)
 bossBar(player, "dragon", "\u00a7cEnder Dragon", 0.65);   // text + 24-segment progress bar; same key = update
 removeBossBar(player, "dragon");
+broadcastTitle("\u00a76Round 2", "fight!", 40);            // NEW: to everybody
+broadcastActionBar("\u00a7eServer restarts in 5 min", 100);
+clearTitle(player);                                       // NEW: remove the active title and action bar
 
-String[] onScreen = hudView(player);                      // {popup, tip} currently shown
+String[] onScreen = hudView(player);                      // {popup, tip} currently shown (logical text, no padding)
 ```
 
 `Events.PlayerHud` fires per player on every redraw (only if someone listens): edit `lines` (the scoreboard) or set `popup`, so several plugins can add to the same HUD without knowing each other.
-It is an emulation: the "scoreboard" is centered text, not a side panel, and the boss bar is text, not the real bar.
+
+#### Scoreboard position (it no longer sits in the middle of the screen)
+
+The client centers every line of the tip channel, so the scoreboard used to be in the middle of the screen. Now each line is padded with spaces (4 px each) so the whole block sits at the **right** edge by default; all lines start at the same x.
+The width of each line is computed with the default Minecraft font widths (color codes ignored, bold counts +1 px per letter).
+
+| Setting (`server.properties`) | Default | Meaning |
+| --- | --- | --- |
+| `hud-position` | `right` | `right`, `left` or `center` (the old behaviour) |
+| `hud-screen-width` | `427` | Screen width in GUI pixels used to find the edge. If the text is cut off or too far from the edge, change it (480, 640...) |
+| `hud-offset-y` | `0` | Move the scoreboard up (+) or down (-) this many lines |
+| `hud-max-lines` | `15` | Lines beyond this are dropped |
+
+**Every player can tune it live with `/hud`** (no OP needed), because GUI size differs per device:
+
+| Command | What it does |
+| --- | --- |
+| `/hud` | Hide / show the scoreboard |
+| `/hud right` \| `left` \| `center` | Position |
+| `/hud width <px>` | Screen width used for the alignment (160..2000) |
+| `/hud y <n>` | Move up (+) or down (-), -20..20 |
+| `/hud reset` | Back to the server defaults |
+
+For plugins: `hudPosition(p, HudPosition.LEFT)`, `hudVisible(p, false)`, `hudScreenWidth(p, 640)`, `hudOffsetY(p, 2)` (and the matching getters). Titles are always centered. These per-player settings are not saved to disk (they reset when the player leaves).
+
+It is still an emulation: the tests check the text the server sends (including the padding math), **not how a real 0.15.10 client draws it**. Padding is based on assumed font widths and screen size, so check it on a real client and adjust `hud-screen-width` / `/hud y` once. The `left` position relies on trailing spaces being kept by the client (they are followed by `\u00a7r` just in case); `right` only uses leading spaces. The boss bar is text, not the real bar.
+
+### API 1.4 additions (inside `Plugin`)
+
+`api=1.4` in `plugin.properties` is only needed if you use these. Everything is additive: plugins compiled against 1.3 keep working.
+
+| Method | Description |
+| --- | --- |
+| `color("&aHi &lthere")` / `stripColor(s)` | `&` codes to `\u00a7` codes / remove them (also `Text.color`, `Text.strip`) |
+| `messagef(p, "&aYou have %d coins", n)` / `broadcastf(...)` | `String.format` + colors, to one player / everybody |
+| `runRepeating(delay, period, task -> ...)` | Like `runRepeating` but the body receives its `Task` so it can `task.cancel()` itself |
+| `runTimes(delay, period, times, i -> ...)` | Runs `times` times (index 0..times-1) and cancels itself |
+| `countdown(5, s -> broadcast("Starting in " + s), () -> start())` | One call per second with the remaining seconds, then `done` |
+| `once(Events.X.class, e -> ...)` | Listen to an event only once (also with a `Priority`) |
+| `onlineCount()` / `playerNames()` / `isOnline(name)` | Quick player queries |
+| `playersNear(dim, x, y, z, r)` / `nearestPlayer(dim, x, y, z, max)` / `mobsNear(dim, x, y, z, r)` | Entities in a radius, nearest first |
+| `teleportChecked(p, x, y, z)` | Teleport through `Events.PlayerTeleport` (returns false if another plugin cancelled it) |
+| `setWeather(type, ticks)` | `Weather.SUNNY / RAINY / RAINY_THUNDER / THUNDER`; goes through `Events.WeatherChange` |
+| `strikeLightning(x, y, z)` / `giveXp(p, n)` / `setTimeStopped(b)` | Small server helpers |
+| `kickAll(reason, exceptPermission)` | Kick everyone except players with that permission |
+| `hudLine(p, key, order, text, ttlTicks)`, `hudLines`, `hudPosition`, `hudVisible`, `hudScreenWidth`, `hudOffsetY`, `broadcastTitle`, `broadcastActionBar`, `clearTitle` | See the HUD section |
+
+New events: `Events.PlayerTeleport` (cancelable, `toX/toY/toZ` editable; fired by `/tp` and `teleportChecked`, not by the server's internal teleports) and `Events.WeatherChange` (cancelable, `type`/`ticks` editable; fired by `/weather` and `setWeather`, not by random weather).
+
+New helper classes: `Text` (`color`, `strip`, `width`, `bar(progress, length, "&a", "&8")`, `ticks`, `seconds`, `number`, `truncate`) and `Cooldowns` (`tryUse(key, ms)`, `remainingSeconds(key)`, `reset`).
+
+### API 1.5 additions (inside `Plugin`)
+
+`api=1.5` in `plugin.properties` is only needed if you use these. Everything is additive, so plugins compiled against 1.4 keep working. `plugins-ejemplo/Tienda` uses most of them.
+
+#### Menus with buttons
+
+A menu is a chest window with 3 or 6 rows (27 or 54 slots). Each slot holds an item and, optionally, a click handler. Items in a menu are buttons: when a player tries to take or move an item, the change is reverted and the handler runs.
+
+```java
+Menu shop = menu(3);                                          // 3 rows (27 slots); menu(6) gives 54
+shop.border(new Item(160, 7, 1));                             // glass around the edge
+shop.setItem(11, new Item(297, 0, 1).withName(color("&ePan")), e -> {
+    give(e.player, new Item(297, 0, 1));                      // the event has player, menu, slot, item and proposed
+});
+shop.setItem(15, new Item(35, 14, 1).withName(color("&cClose")), e -> closeMenu(e.player));
+shop.onClose(p -> message(p, "Thanks for visiting"));
+openMenu(player, shop);
+```
+
+- Every change a client makes to a menu slot is reverted, so an item never ends up in the wrong place. A slot without a handler just reverts.
+- `Events.MenuClick` can be cancelled. Cancelling it skips the slot's handler; the change is still reverted.
+- While a menu is open the player's inventory is frozen: the client cannot move, drop or craft items. That is what makes it impossible to lose or duplicate an item through a menu. Closing the menu unfreezes it.
+- `onClose` runs when the player closes the menu, when `closeMenu` is called, when the player disconnects, and when the plugin that created the menu is disabled.
+- Opening a menu (or a chest) closes the window the player had open before.
+- `setItem` and the other changes update the screen of every player who has the menu open. Call them from the server thread.
+- The client shows no title for these menus.
+- To show the window, the client needs a chest where the server says it is. So while a menu is open, that player alone sees a chest two blocks above their head; it is removed when the menu closes. The world on the server is not changed.
+
+| Method | Description |
+| --- | --- |
+| `menu(rows)` | New menu with 3 or 6 rows (other values throw `IllegalArgumentException`) |
+| `openMenu(p, menu)` / `closeMenu(p)` / `isMenuOpen(p)` | Open it for a connected player / close it (runs `onClose`) / check |
+| `setItem(slot, item)` / `setItem(slot, item, handler)` | Put an item (air empties the slot), with an optional click handler |
+| `getItem(slot)` / `rows()` / `size()` / `owner()` | Read the menu |
+| `fill(item)` / `border(item)` / `clear()` | Bulk changes; the slots they change lose their handlers |
+| `onClose(handler)` / `viewers()` / `refresh()` | Close callback, players who have it open, resend the whole content |
+
+#### Items with a name and lore
+
+```java
+Item sword = new Item(276, 0, 1).withName(color("&bSword of the cave"))
+        .withLore(Arrays.asList(color("&7Found deep underground"), color("&7Sharp")));
+sword.name();   // the name with its § codes, or null when the item has no name
+sword.lore();   // the lines, or an empty list
+```
+
+Names and lore are saved with the item and sent to the client as NBT (`display`). Limits: 128 characters per name or line, and 16 lore lines. They are part of the item's identity: items with different names do not stack, and the duplicate protection counts them as different items.
+
+#### Recipes
+
+```java
+Map<Character, Item> ing = new HashMap<>();
+ing.put('T', new Item(5, 0, 1));                                       // planks
+ing.put('P', new Item(280, 0, 1));                                     // stick
+addShapedRecipe(new Item(278, 0, 1).withName(color("&bShop pickaxe")), new String[]{"TTT", " P ", " P "}, ing);
+addShapelessRecipe(new Item(1, 0, 4), Arrays.asList(new Item(3, 0, 2), new Item(4, 0, 2)));
+```
+
+- Shaped rows have up to 3 characters, and `' '` is an empty cell. Empty borders are trimmed, so `{"AA ", "A  "}` is a 2x2 recipe. Every character must be in the ingredients map.
+- Shapeless recipes use up to 9 units in total.
+- An ingredient with damage `-1` matches any damage value, for example every kind of log.
+- Recipes added by a plugin are removed when it is disabled. `removeRecipe(recipe)` removes any recipe, built-in ones included (`server().recipes.all` lists them). When a built-in recipe and a plugin recipe give the same result, the built-in one is tried first.
+- Furnace recipes are not part of this API yet.
+- Each recipe added while players are online sends the whole recipe list to each of them again. When you add many, do it in `onEnable`, before players join.
+
+#### Regions
+
+```java
+Region r = region(0, 10, 60, 10, 12, 62, 12);   // corners in any order, inclusive; dimension 0 = overworld, 1 = nether
+r.fill(1, 0);                                   // stone; returns how many blocks were written
+r.replace(1, 4, 0);                             // stone -> cobblestone; returns how many were replaced
+int cobble = r.count(4);
+Region.Snapshot copy = r.copy();                // ids and metas kept in memory
+region(0, 40, 60, 10, 42, 62, 12).paste(copy, 40, 60, 10, true);   // true = skip air: keep what is there where the copy is air
+```
+
+A region holds up to 1,000,000 blocks; larger ones throw `IllegalArgumentException`. Blocks outside the world height are skipped. Other methods: `contains(x, y, z)`, `volume()`, `width()`, `height()`, `depth()`, and `minX()` to `maxZ()`. Snapshots have `width()`, `height()`, `depth()`, `idAt(dx, dy, dz)` and `metaAt(dx, dy, dz)`.
+
+#### Per-player data
+
+```java
+JsonConfig stats = playerData().of(player);     // or of("Steve")
+stats.set("kills", stats.getInt("kills", 0) + 1);
+```
+
+Each player gets a JSON file at `plugins/<Name>/players/<name>.json`, with the same methods as `jsonConfig` (dotted paths, `getInt`, `setDefault`, ...). Names are lowercased, so "Steve" and "steve" share one file. The data is saved when the player disconnects and when the plugin is disabled. `saveAll()` saves now, `exists(name)` checks for the file, and `unload(name)` saves the player's data and drops it from memory.
+
+#### Argument helpers
+
+`mcpe.plugin.Args` reads command arguments. A missing or invalid value returns the default, so a bad number never breaks a command:
+
+| Method | Description |
+| --- | --- |
+| `Args.getInt(args, i, def)` / `Args.getInt(args, i, def, min, max)` | Integer; with a range, values outside it return `def` |
+| `Args.getDouble(args, i, def)` / `Args.getBoolean(args, i, def)` | Finite decimal / `true`, `on`, `si`, `yes`, `1` and `false`, `off`, `no`, `0` |
+| `Args.get(args, i, def)` / `Args.has(args, i)` / `Args.join(args, from)` | Text / whether it exists / the words from a position, joined with spaces |
 
 ### Server and world helpers (inside `Plugin`)
 
@@ -469,7 +635,7 @@ It is an emulation: the "scoreboard" is centered text, not a side panel, and the
 | `mobsIn(dim)` / `highestBlockAt(dim, x, z)` | Mobs in a dimension / top block at x, z |
 | `dropItem(dim, x, y, z, item)` / `explode(dim, x, y, z, size)` / `playLevelEvent(dim, x, y, z, id, data)` | Drop an item / explosion / a level event (sound or particle effect) |
 | `getFile()` / `dataFolder()` / `pluginManager()` / `plugins()` | Your jar / your folder / the plugin manager / loaded plugins |
-| `server().getServerVersion()` / `getGameVersion()` / `getProtocolVersion()` / `getApiVersion()` | Name and build (e.g. `BlockNes 1.4.0 beta`), `0.15.10`, `84`, `1.3` |
+| `server().getServerVersion()` / `getGameVersion()` / `getProtocolVersion()` / `getApiVersion()` | Name and build (e.g. `BlockNes 1.5.0 beta`), `0.15.10`, `84`, `1.5` |
 | `server().onlinePlayers()` / `getOps()` / `getConfigString(key, def)` / `getConfigInt` / `getConfigBoolean` | Players, operator names, values from `server.properties` |
 | `name()`, `version()`, `author()`, `description()` | Plugin metadata |
 
@@ -548,4 +714,4 @@ main=example.HelloWorld
 version=1.0
 author=You
 description=Greets players
-```
+``` 
