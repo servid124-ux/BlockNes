@@ -2,15 +2,27 @@
 
 # BlockNes
 
-**1.6.0 beta** · A Minecraft: Pocket Edition **0.15.10** server, written in plain Java.
+**1.6.5 beta** · A Minecraft: Pocket Edition **0.15.10** server, written in plain Java.
 
-![Version](https://img.shields.io/badge/version-1.6.0--beta-2ea44f?style=flat-square) ![MCPE](https://img.shields.io/badge/MCPE-0.15.10-blue?style=flat-square) ![Java](https://img.shields.io/badge/Java-17%2B-orange?style=flat-square) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen?style=flat-square) ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Termux-lightgrey?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.6.5--beta-2ea44f?style=flat-square) ![MCPE](https://img.shields.io/badge/MCPE-0.15.10-blue?style=flat-square) ![Java](https://img.shields.io/badge/Java-17%2B-orange?style=flat-square) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen?style=flat-square) ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Termux-lightgrey?style=flat-square)
 
-[Quick start](#quick-start) · [Files](#files-and-folders) · [Configuration](#configuration) · [Commands](#commands) · [Plugin API](#plugin-api) · [RakNetLib](#raknetlib)
+[What's new](#whats-new) · [Quick start](#quick-start) · [Files](#files-and-folders) · [Configuration](#configuration) · [Commands](#commands) · [Plugin API](#plugin-api) · [RakNetLib](#raknetlib)
 
 </div>
 
 No external dependencies. It implements the MCPE network protocol and game logic in Java and includes a plugin API.
+
+## What's new
+
+**Release 1.6.5 beta: plugins are much less limited.** The defaults no longer disable a plugin after a number of errors or slow calls, and they no longer cap how many tasks a plugin can schedule. The limits can still be turned on in `server.properties`.
+
+The release also brings plugin API 1.6 (`api=1.6`):
+
+- A **server facade** (`Server.getInstance()`, `getLevelByName()`, `getScheduler()`, `getCommandMap()`...) and a **scheduler** with `Task`, `PluginTask` and `AsyncTask`.
+- **Event interfaces**: every event can also be listened to by its interface name, for example `on(PlayerChatEvent.class, ...)`.
+- `Level`, `Position`, `Vector3`, `TextFormat`, metadata, `Item.get(...)` and `player.getPlayerInventory()`.
+
+Plugins built for earlier versions of the API keep working. Details: [API 1.6 additions](#api-16-additions-inside-plugin).
 
 ---
 
@@ -32,6 +44,17 @@ Download the files from the release page. Nothing needs to be compiled.
 | `server-plugin-api.jar` | Compile-only jar used to build your plugins. Do **not** put it in `plugins/` |
 | `RakNetLib.jar` | The RakNet library the server is built on. See [RakNetLib](#raknetlib) to use it in your own project |
 
+### Build from source
+
+Requires JDK 11 or newer.
+
+```sh
+sh build.sh      # or: mvn package
+sh test.sh       # plugin API test suite
+```
+
+`build.sh` writes `server/target/server.jar` and `server/target/server-plugin-api.jar`. The tests write `players/` and `server.log` into the project folder, so remove them before running `sh test.sh` again.
+
 ### Run
 
 ```sh
@@ -50,7 +73,7 @@ Run it from the folder where you want the server files to live.
 The console prints the name and version on startup, for example:
 
 ```
-Starting BlockNes 1.6.0 beta version 0.15.10 (MCPE protocol 84)
+Starting BlockNes 1.6.5 beta version 0.15.10 (MCPE protocol 84)
 ```
 
 Stop the server with `/stop` or Ctrl+C (both save players, worlds and items).
@@ -71,8 +94,6 @@ Stop the server with `/stop` or Ctrl+C (both save players, worlds and items).
 | `worlds/nether/` | Nether: `level.dat`, `region/` (chunks) |
 | `plugins/` | Plugin `.jar` files, plugin data folders and `permissions.properties` |
 | `server.log` | Log file (rotated to `server.log.old` at about 5 MB) |
-
----
 
 ---
 
@@ -103,12 +124,13 @@ Missing keys are added automatically with their default value the next time the 
 | `rcon.password` | *(empty)* | Password for RCON |
 | `rcon.port` | `19132` | TCP port for RCON (1-65535) |
 | `network.upnp-forwarding` | `false` | `true`: open the UDP port on the router with UPnP at startup and close it at shutdown |
+| `plugin-max-errors` | `0` | Errors in plugin handlers before the plugin is disabled. `0` = no limit |
+| `plugin-max-slow-calls` | `0` | Handler calls slower than 100 ms before the plugin is disabled. `0` = no limit |
+| `plugin-max-tasks` | `0` | Pending tasks per plugin; more of them throw `IllegalStateException`. `0` = no limit |
 
 Invalid or out-of-range values fall back to a safe default and a warning is printed.
 
 > The server only writes default values into a **new** `server.properties`. If you already have one, edit `motd` there yourself.
-
----
 
 ---
 
@@ -148,19 +170,53 @@ Commands work from the console (with or without `/`) and in-game chat (starting 
 
 ---
 
----
-
 ## Plugin API
 
 Plugins are `.jar` files placed in `plugins/`. They are loaded on startup and on `/plugins reload`. A plugin that crashes never takes the server down.
 
-The API version is `1.5` (`server().getApiVersion()`). Plugins built for earlier versions of this API keep loading, because the API only adds to what was there. Version 1.2 adds `p.getPing()` and the text above the head (`p.setNameTag()`, see *Player*); a plugin that uses them declares `api=1.2`.
+The API version is `1.6` (`server().getApiVersion()`). Plugins built for earlier versions of this API keep loading, because the API only adds to what was there. Version 1.2 adds `p.getPing()` and the text above the head (`p.setNameTag()`, see *Player*); a plugin that uses them declares `api=1.2`.
 
 Version 1.3 adds the access-control and server-setting helpers listed below (`banPlayer`, `whitelistAdd`, `isPvpEnabled`, ...). A plugin that declares `api=1.3` needs this version or newer; plugins for older versions keep loading.
 
 Version 1.5 adds menus with buttons, recipes added by plugins, regions, per-player data, item names and lore, and argument helpers for commands (see *API 1.5 additions*). A plugin that uses them declares `api=1.5`; plugins for older versions keep loading.
 
-**Limits.** A handler that throws 100 times, or takes more than 100 ms in 1000 calls, disables its plugin; the server keeps running. A plugin can have up to 5000 pending tasks; more `runLater` or `runRepeating` calls throw an `IllegalStateException`.
+Version 1.6 adds a server facade, a scheduler with `Task`, `PluginTask` and `AsyncTask`, a command map with `CommandExecutor`, event interfaces, `Level`, `Position`, `Vector3`, metadata, `TextFormat`, `Item.get(...)` and `getPlayerInventory()` (see *API 1.6 additions*). A plugin that uses them declares `api=1.6`; plugins for earlier versions keep loading.
+
+**Limits.** There are no limits by default: a handler that throws is logged and the other handlers keep running, and a plugin can have as many pending tasks as it needs. To turn the protection on, set `plugin-max-errors`, `plugin-max-slow-calls` and/or `plugin-max-tasks` in `server.properties` (for example 100, 1000 and 5000). A plugin is then disabled after that many handler errors or slow calls (calls slower than 100 ms), and more pending tasks than the limit make `runLater`, `runRepeating` and the scheduler throw an `IllegalStateException`.
+
+### What plugins can and can't change
+
+Plugins can change most of the game logic. Here is what they can touch, and where the limits are.
+
+**Plugins can change**
+
+- **Players:** chat text, format and recipients; commands; movement; clicks on blocks and air; damage, death and respawn; game mode, health, food and XP; permissions; teleports; kicks and bans.
+- **Blocks and the world:** block breaks and placements, sign text, the blocks an explosion destroys, `setBlock` and regions, time, weather and lightning.
+- **Mobs:** spawning by protocol id, damage, spawn, death and drops.
+- **Items and crafting:** crafting, shaped and shapeless recipes, item names and lore, and chest-style menus.
+- **Packets:** read and cancel raw packets with `PacketReceive` and `PacketSend`, and send your own bytes with `server().send(player, bytes)`.
+- **Server:** commands, the scheduler, your own data files, and services shared between plugins.
+
+Cancelable events stop the action. Editable fields change its result, for example the chat message or the damage amount.
+
+**What the protocol doesn't allow (Minecraft PE 0.15.10, protocol 84)**
+
+- Titles, boss bars and scoreboards are not packets in this version. The API emulates them with the tip and popup channels, so the result depends on the client.
+- No custom blocks, items, mobs or particles. The ids are the ones 0.15.10 knows, and `spawnMob` returns `null` for an unknown id.
+- Menus are chest windows with 3 or 6 rows, and they have no title.
+- Item names are at most 128 characters per line, and lore has at most 16 lines.
+- Furnace recipes are not part of the recipes API.
+- Your own packets must use the layouts of protocol 84. You can send them, but you cannot add new packet types.
+
+**What the server core doesn't expose**
+
+- The tick rate: the server runs at 20 ticks per second, and no API changes it.
+- The transport: RakNet's reliability, resends and handshake are internal. Use `getPing()`, `kick()` and the packet events instead.
+- World generation: there is no hook to change how new chunks are generated.
+- Mob AI and pathfinding, block updates and redstone: there are no events or API for them.
+- Furnace smelting and burning: there are no events or API for them.
+- Player data files (`players/*.dat`): use `playerData()` for your own data.
+- `server.properties`: no API method writes it. Read it with `server().getConfigString(key, def)`, `getConfigInt` and `getConfigBoolean`.
 
 ### Plugin layout
 
@@ -186,7 +242,7 @@ loadbefore=SomePlugin
 - `softdepend`: loaded before yours if they exist.
 - `loadbefore`: your plugin is loaded before these, when they are present.
 - `prefix`: the text in brackets at the start of your log lines (default: the plugin name).
-- `api`: the minimum API version your plugin needs. This server has API `1.5`; a plugin that asks for a newer one is not loaded and a warning is printed.
+- `api`: the minimum API version your plugin needs. This server has API `1.6`; a plugin that asks for a newer one is not loaded and a warning is printed.
 - `permissions.<node>.…` and `commands.<name>.…` declare permissions and commands (see below).
 - An optional `config.properties` in the jar root is copied to `plugins/<Name>/config.properties` on first run.
 
@@ -263,7 +319,36 @@ Overloads: `on(type, handler)`, `on(type, priority, handler)`, `on(type, priorit
 
 </details>
 
-#### `@EventHandler` listeners (PocketMine / Bukkit style)
+#### Event interfaces
+
+Every event also implements an interface with a standard name (in the `net.BlockNes.event` packages). You can listen to the interface instead of the class:
+
+```java
+on(PlayerChatEvent.class, e -> e.setMessage(e.getMessage().replace("badword", "****")));
+
+@EventHandler(priority = Priority.HIGH, ignoreCancelled = true)
+public void onChat(PlayerChatEvent e) { e.setMessage(e.getMessage().replace("badword", "****")); }
+```
+
+`EntityEvent.getEntity()` returns the `Player` or the `Mob`, so check it with `instanceof`. `getDamager()` returns `null` when no entity caused the damage. The category interfaces `PlayerEvent`, `EntityEvent` and `PluginEvent` cover all the events of their kind.
+
+<details>
+<summary>All event interfaces</summary>
+
+| Package | Interfaces |
+| --- | --- |
+| `net.BlockNes.event.player` | `PlayerEvent` (category), `PlayerJoinEvent`, `PlayerQuitEvent`, `PlayerChatEvent`, `PlayerCommandPreprocessEvent`, `PlayerMoveEvent`, `PlayerInteractEvent`, `PlayerDeathEvent`, `PlayerRespawnEvent`, `PlayerGameModeChangeEvent`, `PlayerKickEvent`, `PlayerPreLoginEvent`, `PlayerDropItemEvent`, `PlayerItemConsumeEvent`, `PlayerBedEnterEvent`, `PlayerBedLeaveEvent`, `PlayerToggleSneakEvent`, `PlayerToggleSprintEvent`, `PlayerExhaustEvent`, `PlayerAnimationEvent`, `PlayerItemHeldEvent` |
+| `net.BlockNes.event.block` | `BlockBreakEvent`, `BlockPlaceEvent`, `SignChangeEvent` |
+| `net.BlockNes.event.entity` | `EntityEvent` (category), `EntityDamageEvent`, `EntityDeathEvent`, `EntitySpawnEvent`, `EntityRegainHealthEvent`, `EntityTeleportEvent` |
+| `net.BlockNes.event.inventory` | `InventoryOpenEvent`, `InventoryCloseEvent`, `CraftItemEvent` |
+| `net.BlockNes.event.server` | `ServerCommandEvent`, `DataPacketReceiveEvent`, `DataPacketSendEvent` |
+| `net.BlockNes.event.level` | `LevelSaveEvent` |
+| `net.BlockNes.event.plugin` | `PluginEvent` (category), `PluginEnableEvent`, `PluginDisableEvent` |
+| `net.BlockNes.event` | `Cancellable`, `Listener` |
+
+</details>
+
+#### `@EventHandler` listeners
 
 Instead of one `on(...)` per event you can group handlers in a class and register them all at once:
 
@@ -602,7 +687,7 @@ Region.Snapshot copy = r.copy();                // ids and metas kept in memory
 region(0, 40, 60, 10, 42, 62, 12).paste(copy, 40, 60, 10, true);   // true = skip air: keep what is there where the copy is air
 ```
 
-A region holds up to 1,000,000 blocks; larger ones throw `IllegalArgumentException`. Blocks outside the world height are skipped. Other methods: `contains(x, y, z)`, `volume()`, `width()`, `height()`, `depth()`, and `minX()` to `maxZ()`. Snapshots have `width()`, `height()`, `depth()`, `idAt(dx, dy, dz)` and `metaAt(dx, dy, dz)`.
+Creating a region has no size limit. `copy()` refuses regions of more than 1,000,000 blocks with `IllegalArgumentException`, because the copy is kept in memory. Blocks outside the world height are skipped. Other methods: `contains(x, y, z)`, `volume()`, `width()`, `height()`, `depth()`, and `minX()` to `maxZ()`. Snapshots have `width()`, `height()`, `depth()`, `idAt(dx, dy, dz)` and `metaAt(dx, dy, dz)`.
 
 #### Per-player data
 
@@ -623,10 +708,133 @@ Each player gets a JSON file at `plugins/<Name>/players/<name>.json`, with the s
 | `Args.getDouble(args, i, def)` / `Args.getBoolean(args, i, def)` | Finite decimal / `true`, `on`, `si`, `yes`, `1` and `false`, `off`, `no`, `0` |
 | `Args.get(args, i, def)` / `Args.has(args, i)` / `Args.join(args, from)` | Text / whether it exists / the words from a position, joined with spaces |
 
-### Server and world helpers (inside `Plugin`)
+### API 1.6 additions (inside `Plugin`)
 
-<details>
-<summary>All server and world helpers (30 entries)</summary>
+`api=1.6` in `plugin.properties` is only needed if you use these. Everything is additive: plugins compiled against 1.5 keep working.
+
+#### Base class and state
+
+- `extends PluginBase` works the same as `extends Plugin`.
+- `setEnabled(true)` / `setEnabled(false)` enable or disable the plugin. Enabling a disabled plugin reads its jar again, so the old object stops working.
+- `isEnabled()` is `true` only after `onEnable()` has finished. Tasks and listeners can still be registered inside `onEnable()`.
+
+#### Server facade
+
+Get it with `getServer()` (or `Server.getInstance()` from anywhere):
+
+| Method | Description |
+| --- | --- |
+| `getName()` / `getVersion()` / `getMinecraftVersion()` / `getApiVersion()` | `BlockNes`, `1.6.5 beta`, `0.15.10`, `1.6` |
+| `getPort()` / `getIp()` / `getMaxPlayers()` / `getMotd()` | Server settings |
+| `getOnlinePlayers()` / `getPlayer(name)` / `getPlayerExact(name)` | `getPlayer` also accepts the start of a name |
+| `getLevelByName(name)` / `getDefaultLevel()` / `getLevels()` | Worlds as `Level` objects (`world`, `nether`) |
+| `getPluginManager()` / `getScheduler()` / `getCommandMap()` / `getLogger()` | Managers and logger |
+| `getDataPath()` / `getPluginPath()` | Server and plugin folders, with a trailing separator |
+| `isOp(name)` / `getWhitelisted()` / `isWhitelisted(name)` / `getNameBans()` / `getIPBans()` | Access lists |
+| `broadcastMessage(msg, recipients)` | Message to a list of players |
+| `dispatchCommand(sender, line)` | Run a command line as `sender`; returns `true` (it does not report whether the command exists) |
+| `getConsoleSender()` / `shutdown()` | Console sender / stop the server |
+
+#### Scheduler
+
+Get it with `getScheduler()`. Delays and periods are in ticks (20 ticks = 1 second).
+
+| Method | Description |
+| --- | --- |
+| `scheduleTask(task)` | Run on the next tick |
+| `scheduleDelayedTask(task, delay)` / `scheduleRepeatingTask(task, period)` / `scheduleDelayedRepeatingTask(task, delay, period)` | Run later / repeat / both. Each returns a `TaskHandler` |
+| `scheduleAsyncTask(asyncTask)` | Run `onRun()` on another thread; returns the task id |
+| `cancelTask(id)` / `cancelTasks(plugin)` / `cancelAllTasks()` / `isQueued(id)` | Cancel and check |
+
+```java
+getServer().getScheduler().scheduleRepeatingTask(new Task() {
+    @Override public void onRun(long currentTick) { broadcast("Every 5 minutes"); }
+}, 6000);
+```
+
+- `Task`: implement `onRun(long currentTick)`. `onCancel()` runs when the task is cancelled.
+- `PluginTask(plugin)`: a task that belongs to a plugin. It is cancelled automatically when the plugin is disabled, and `getOwner()` returns the plugin.
+- `AsyncTask`: `onRun()` runs on another thread (never touch players or worlds there); `onCompletion(Server)` runs on the server thread. Use `setResult(...)` and `getResult()` to pass data between them.
+
+#### Commands
+
+| Method | Description |
+| --- | --- |
+| `command(name, description, usage, permission, (sender, command, label, args) -> ...)` | Command with a `CommandExecutor`. Return `false` to show the usage line |
+| `getCommandMap()` → `getCommand(name)` / `getCommands()` / `register(prefix, command)` / `unregister(name)` / `dispatch(sender, line)` | Find, add and remove commands |
+| `ConsoleCommandSender` | The console as a command sender |
+
+```java
+command("gift", "gives 16 stone", "", "", (sender, command, label, args) -> {
+    Player p = getServer().getPlayerExact(sender.getName());
+    if (p == null) { sender.sendMessage("Players only"); return true; }
+    p.getPlayerInventory().addItem(Item.get(1, 0, 16));
+    return true;
+});
+```
+
+#### Events
+
+| Method | Description |
+| --- | --- |
+| `getPluginManager().registerEvents(listener, plugin)` | Register every `@EventHandler` method of a `net.BlockNes.event.Listener` |
+| `getPluginManager().unregisterEvents(listener, plugin)` | Remove them |
+| `getPluginManager().callEvent(event)` | Send an event to the listeners (same as `fire`) |
+
+#### Worlds, positions and vectors
+
+Get a world with `getServer().getLevelByName("world")`, `getDefaultLevel()` or `player.getLevel()`.
+
+| Method | Description |
+| --- | --- |
+| `getName()` / `getDimension()` | Folder name and dimension (0 overworld, 1 nether) |
+| `getBlockIdAt(x, y, z)` / `getBlockDataAt(x, y, z)` | Read a block id and its data |
+| `setBlockIdAt(x, y, z, id)` / `setBlockDataAt(x, y, z, meta)` / `setBlockAt(x, y, z, id, meta)` | Change blocks (clients are updated) |
+| `getHighestBlockAt(x, z)` / `getSpawnLocation()` | Column height and world spawn |
+| `getTime()` / `setTime(t)` / `stopTime()` / `startTime()` | World time |
+| `setWeather(type, ticks)` | Weather in the overworld |
+| `getPlayers()` / `getMobs()` | Players and mobs in that world |
+| `dropItem(vector, item)` / `explode(vector, size)` / `addLevelEvent(vector, eventId, data)` / `save()` | Items, explosions, sounds and particles, saving |
+
+Time and weather are global to the server, not per world. A block is an id and its data; there is no `Block` object yet.
+
+`Position` is a `Vector3` with a world (`getLevel()`). `Vector3` is immutable: `add`, `subtract`, `multiply`, `divide`, `distance`, `distanceSquared`, `length`, `normalize`, `floor`, `ceil` and `dot` return new vectors.
+
+#### Players
+
+| Method | Description |
+| --- | --- |
+| `getLevel()` / `getPosition()` | World and position |
+| `getIp()` | IP address without the port (`getAddress()` still returns the `InetSocketAddress`) |
+| `getFood()` / `getXpLevel()` / `getXpProgress()` | Food level and experience |
+| `hasPermission(node)` | Permission check (OPs have everything) |
+| `getPlayerInventory()` | Inventory that updates the client: `addItem`, `removeItem`, `setItem`, `getItem`, `contains`, `getContents`, `clear`. `getInventory()` is the raw inventory and does not update the client |
+| `sendTitle(title, subtitle)` / `addTitle(title, subtitle, fadeIn, stay, fadeOut)` | Title in the middle of the screen. The times are in ticks, and the title is shown for their sum (no animation) |
+| `setMetadata(key, value)` / `getMetadata(key)` / `hasMetadata(key)` / `removeMetadata(key, plugin)` | Plugin data stored on the player (see below) |
+
+#### Metadata
+
+Metadata is stored per plugin on players and levels, and it is removed when the plugin is disabled:
+
+```java
+p.setMetadata("vip", new FixedMetadataValue(this, true));
+boolean vip = p.hasMetadata("vip") && p.getMetadata("vip").get(0).asBoolean();
+p.removeMetadata("vip", this);
+```
+
+`MetadataValue` has `value()`, `asInt()`, `asLong()`, `asDouble()`, `asString()` and `asBoolean()`. `FixedMetadataValue(plugin, value)` keeps a fixed value. Metadata on blocks is not available yet.
+
+#### Items and text
+
+| Method | Description |
+| --- | --- |
+| `Item.get(id)` / `Item.get(id, damage)` / `Item.get(id, damage, count)` | Create an item |
+| `getId()` / `getDamage()` / `getCount()` / `getMaxStackSize()` / `isNull()` | Item data |
+| `getCustomName()` / `getLore()` / `getEnchantments()` / `hasEnchantment(id)` | Name, description and enchantments |
+
+`Item` is immutable, so change it with `withName(...)`, `withCount(...)` and the other `with` methods. `TextFormat` has the color and style codes (`TextFormat.RED`, `TextFormat.GREEN`, `TextFormat.BOLD`, `TextFormat.RESET`...), and `TextFormat.clean(text)` removes them.
+
+### Server and world helpers (inside `Plugin`)
 
 | Method | Description |
 | --- | --- |
@@ -657,11 +865,9 @@ Each player gets a JSON file at `plugins/<Name>/players/<name>.json`, with the s
 | `mobsIn(dim)` / `highestBlockAt(dim, x, z)` | Mobs in a dimension / top block at x, z |
 | `dropItem(dim, x, y, z, item)` / `explode(dim, x, y, z, size)` / `playLevelEvent(dim, x, y, z, id, data)` | Drop an item / explosion / a level event (sound or particle effect) |
 | `getFile()` / `dataFolder()` / `pluginManager()` / `plugins()` | Your jar / your folder / the plugin manager / loaded plugins |
-| `server().getServerVersion()` / `getGameVersion()` / `getProtocolVersion()` / `getApiVersion()` | Name and build (e.g. `BlockNes 1.6.0 beta`), `0.15.10`, `84`, `1.5` |
+| `server().getServerVersion()` / `getGameVersion()` / `getProtocolVersion()` / `getApiVersion()` | Name and build (e.g. `BlockNes 1.6.5 beta`), `0.15.10`, `84`, `1.6` |
 | `server().onlinePlayers()` / `getOps()` / `getConfigString(key, def)` / `getConfigInt` / `getConfigBoolean` | Players, operator names, values from `server.properties` |
 | `name()`, `version()`, `author()`, `description()` | Plugin metadata |
-
-</details>
 
 Colors use the Minecraft `§` codes (`\u00a7a` in Java strings).
 
@@ -670,7 +876,7 @@ Colors use the Minecraft `§` codes (`\u00a7a` in Java strings).
 `Player` objects come from events, commands and `players()`:
 
 <details>
-<summary>Player methods (12 entries)</summary>
+<summary>Player methods (15 entries)</summary>
 
 | Call | Description |
 | --- | --- |
@@ -686,6 +892,9 @@ Colors use the Minecraft `§` codes (`\u00a7a` in Java strings).
 | `p.getPing()` | Round-trip latency in ms (RakNet ping every second). `-1` until the first answer, and again after 5 s without one |
 | `p.getNameTag()` / `setNameTag(text)` | Text above the head, seen by the players who see `p`. `null` = the real name; at most 256 characters |
 | `p.isNameTagVisible()` / `setNameTagVisible(bool)` | Show or hide that text |
+| `p.getLevel()` / `getPosition()` / `getIp()` | World, position and IP without the port (API 1.6) |
+| `p.getPlayerInventory()` | Inventory that updates the client (API 1.6) |
+| `p.sendTitle(title, subtitle)` / `addTitle(...)` / `hasPermission(node)` | Titles and permission check (API 1.6) |
 
 </details>
 
@@ -770,7 +979,7 @@ public class RakNetEchoServer {
                 System.out.println("open: " + s.address);
             }
             @Override public void onPacket(Session s, byte[] buffer) {
-                // buffer[0] es el ID del paquete (0xFE en paquetes de juego); se devuelve con "pong" al final
+                // buffer[0] is the packet ID (0xFE for game packets). The reply is the same data plus "pong" at the end
                 byte[] pong = "pong".getBytes(StandardCharsets.UTF_8);
                 byte[] reply = new byte[buffer.length + pong.length];
                 System.arraycopy(buffer, 0, reply, 0, buffer.length);
@@ -783,7 +992,7 @@ public class RakNetEchoServer {
         });
         server.bind();
         System.out.println("listening on UDP port " + server.getPort());
-        server.run();   // bloquea hasta que se llame server.stop()
+        server.run();   // blocks until server.stop() is called
     }
 }
 ```
@@ -809,10 +1018,10 @@ public class RakNetEchoClient {
         client.setListener(new RakNetClient.Listener() {
             @Override public void onConnected() {
                 System.out.println("connected, sending hello");
-                client.sendGame("hello".getBytes(StandardCharsets.UTF_8));   // sendGame agrega el 0xFE
+                client.sendGame("hello".getBytes(StandardCharsets.UTF_8));   // sendGame adds the 0xFE
             }
             @Override public void onPacket(byte[] buffer) {
-                String text = new String(buffer, 1, buffer.length - 1, StandardCharsets.UTF_8);   // se salta el 0xFE
+                String text = new String(buffer, 1, buffer.length - 1, StandardCharsets.UTF_8);   // skips the 0xFE
                 System.out.println("reply: " + text);
                 client.disconnect();
             }
