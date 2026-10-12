@@ -1,26 +1,38 @@
-# BlockNes 1.5.0 beta
+<div align="center">
 
-A Minecraft: Pocket Edition **0.15.10** (protocol 84) server written in plain Java, with no external dependencies. It implements the MCPE network protocol and game logic in Java and includes a plugin API. Some mechanics may still differ from the original game.
+# BlockNes
 
-> **Beta:** the server is already playable, but some features are still missing or unfinished (for example, skeletons do not raise their bow arm yet).
+**1.6.0 beta** · A Minecraft: Pocket Edition **0.15.10** server, written in plain Java.
+
+![Version](https://img.shields.io/badge/version-1.6.0--beta-2ea44f?style=flat-square) ![MCPE](https://img.shields.io/badge/MCPE-0.15.10-blue?style=flat-square) ![Java](https://img.shields.io/badge/Java-17%2B-orange?style=flat-square) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen?style=flat-square) ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Termux-lightgrey?style=flat-square)
+
+[Quick start](#quick-start) · [Files](#files-and-folders) · [Configuration](#configuration) · [Commands](#commands) · [Plugin API](#plugin-api) · [RakNetLib](#raknetlib)
+
+</div>
+
+No external dependencies. It implements the MCPE network protocol and game logic in Java and includes a plugin API.
 
 ---
 
-## Downloads
+## Quick start
 
-Two jars are published:
+### Requirements
 
-| Jar | Purpose |
-| --- | --- |
-| `server.jar` | The server itself (`java -jar server.jar`) |
-| `plugin-api.jar` | Compile-only jar used to build your plugins. Do **not** put it in `plugins/` |
-
-## Requirements
-
-- Java 11 or newer (on Termux: `pkg install openjdk-17`)
+- Compatible with Linux and Termux
+- Java 17 or newer (for example 17, 21 or 25). On Termux: `pkg install openjdk-17`
 - A Minecraft PE 0.15.10 client
 
-## Starting the server
+### Downloads
+
+Download the files from the release page. Nothing needs to be compiled.
+
+| File | Purpose |
+| --- | --- |
+| `server.jar` | The server. Run it with `java -jar server.jar` |
+| `server-plugin-api.jar` | Compile-only jar used to build your plugins. Do **not** put it in `plugins/` |
+| `RakNetLib.jar` | The RakNet library the server is built on. See [RakNetLib](#raknetlib) to use it in your own project |
+
+### Run
 
 ```sh
 java -jar server.jar
@@ -38,18 +50,20 @@ Run it from the folder where you want the server files to live.
 The console prints the name and version on startup, for example:
 
 ```
-Starting BlockNes 1.5.0 beta version 0.15.10 (MCPE protocol 84)
+Starting BlockNes 1.6.0 beta version 0.15.10 (MCPE protocol 84)
 ```
 
 Stop the server with `/stop` or Ctrl+C (both save players, worlds and items).
 
-### Files and folders created
+---
+
+## Files and folders
 
 | Path | Purpose |
 | --- | --- |
 | `server.properties` | Server configuration |
 | `ops.txt` | Operators (one name per line) |
-| `players/` | One file per player (`<name>.dat`): position, health, inventory. Also `enderchests.dat` (ender chests) |
+| `players/` | One file per player (`<name>.dat`): position, health, inventory and achievements. Also `enderchests.dat` (ender chests) |
 | `banned-players.txt` | Banned player names, one per line. Created at startup; managed with `ban` and `pardon` |
 | `banned-ips.txt` | Banned IP addresses, one per line. Managed with `ban-ip` and `pardon-ip` |
 | `white-list.txt` | White list names, one per line. Used when `white-list=on` |
@@ -60,7 +74,9 @@ Stop the server with `/stop` or Ctrl+C (both save players, worlds and items).
 
 ---
 
-## Configuration (`server.properties`)
+---
+
+## Configuration
 
 Missing keys are added automatically with their default value the next time the server starts.
 
@@ -82,6 +98,11 @@ Missing keys are added automatically with their default value the next time the 
 | `spawn-mobs` | `on` | `off`: no natural mob spawns (spawn eggs and `/summon` still work) |
 | `white-list` | `off` | `on`: only the names in `white-list.txt` can join |
 | `pregenerate-radius` | `0` | Chunks around spawn generated at startup, before players join (0-16). `0` only prepares the spawn area. New chunks may get animals on grass |
+| `enable-query` | `true` | Query GS4 on the same UDP port, used by server list tools |
+| `enable-rcon` | `false` | RCON over TCP (Source protocol). Uses `rcon.password` to log in |
+| `rcon.password` | *(empty)* | Password for RCON |
+| `rcon.port` | `19132` | TCP port for RCON (1-65535) |
+| `network.upnp-forwarding` | `false` | `true`: open the UDP port on the router with UPnP at startup and close it at shutdown |
 
 Invalid or out-of-range values fall back to a safe default and a warning is printed.
 
@@ -89,7 +110,9 @@ Invalid or out-of-range values fall back to a safe default and a warning is prin
 
 ---
 
-## Console and in-game commands
+---
+
+## Commands
 
 Commands work from the console (with or without `/`) and in-game chat (starting with `/`). Most commands are OP-only; add yourself with `/op <name>` in the console or by editing `ops.txt`.
 
@@ -125,16 +148,7 @@ Commands work from the console (with or without `/`) and in-game chat (starting 
 
 ---
 
-## Plugin API tests
-
-On Linux, macOS, or Termux with JDK 11 or newer, run:
-
-```sh
-sh test.sh           # plugin API, lifecycle, HUD, menus, recipes, and examples
-sh test-network.sh   # longer UDP/RakNet integration test
-```
-
-Test plugin JARs are built in temporary directories; the scripts do not overwrite or remove installed plugins. Detailed logs are saved in `test-results/`.
+---
 
 ## Plugin API
 
@@ -150,7 +164,7 @@ Version 1.5 adds menus with buttons, recipes added by plugins, regions, per-play
 
 ### Plugin layout
 
-Compile your plugin against `plugin-api.jar`; the finished plugin jar goes in `plugins/`. A plugin jar needs a `plugin.properties` file in its root and a main class that extends `mcpe.plugin.Plugin` and has a public no-argument constructor.
+Compile your plugin against `server-plugin-api.jar`; the finished plugin jar goes in `plugins/`. A plugin jar needs a `plugin.properties` file in its root and a main class that extends `net.BlockNes.plugin.Plugin` and has a public no-argument constructor.
 
 ```properties
 name=HelloWorld
@@ -202,6 +216,9 @@ on(Events.BlockPlace.class, Priority.HIGH, true, e -> { if (e.id == 46) e.setCan
 Overloads: `on(type, handler)`, `on(type, priority, handler)`, `on(type, priority, ignoreCancelled, handler)`.
 `Priority` order: `LOWEST`, `LOW`, `NORMAL`, `HIGH`, `HIGHEST`, `MONITOR` (last; observe only).
 
+<details>
+<summary>All events (39 entries)</summary>
+
 | Event | Cancelable | Fields / notes |
 | --- | --- | --- |
 | `PlayerJoin` | no | `player` |
@@ -243,6 +260,8 @@ Overloads: `on(type, handler)`, `on(type, priority, handler)`, `on(type, priorit
 | `PacketSend` | yes | `data` (raw packet sent through `Server.send`) |
 | `LevelSave` | no | fired after every world save |
 | `PluginEnable` / `PluginDisable` | no | `plugin` |
+
+</details>
 
 #### `@EventHandler` listeners (PocketMine / Bukkit style)
 
@@ -299,8 +318,8 @@ Wildcards: `*` and `a.*`. OPs have every permission.
 For a command with its own state, extend `Command`. It handles the usage line, the aliases and the permission:
 
 ```java
-import mcpe.command.CommandSender;
-import mcpe.plugin.Command;
+import net.BlockNes.command.CommandSender;
+import net.BlockNes.plugin.Command;
 
 // in onEnable():
 registerCommand(new Command("greet", "greets someone", "<name>", "hi") {
@@ -596,7 +615,7 @@ Each player gets a JSON file at `plugins/<Name>/players/<name>.json`, with the s
 
 #### Argument helpers
 
-`mcpe.plugin.Args` reads command arguments. A missing or invalid value returns the default, so a bad number never breaks a command:
+`net.BlockNes.plugin.Args` reads command arguments. A missing or invalid value returns the default, so a bad number never breaks a command:
 
 | Method | Description |
 | --- | --- |
@@ -605,6 +624,9 @@ Each player gets a JSON file at `plugins/<Name>/players/<name>.json`, with the s
 | `Args.get(args, i, def)` / `Args.has(args, i)` / `Args.join(args, from)` | Text / whether it exists / the words from a position, joined with spaces |
 
 ### Server and world helpers (inside `Plugin`)
+
+<details>
+<summary>All server and world helpers (30 entries)</summary>
 
 | Method | Description |
 | --- | --- |
@@ -635,15 +657,20 @@ Each player gets a JSON file at `plugins/<Name>/players/<name>.json`, with the s
 | `mobsIn(dim)` / `highestBlockAt(dim, x, z)` | Mobs in a dimension / top block at x, z |
 | `dropItem(dim, x, y, z, item)` / `explode(dim, x, y, z, size)` / `playLevelEvent(dim, x, y, z, id, data)` | Drop an item / explosion / a level event (sound or particle effect) |
 | `getFile()` / `dataFolder()` / `pluginManager()` / `plugins()` | Your jar / your folder / the plugin manager / loaded plugins |
-| `server().getServerVersion()` / `getGameVersion()` / `getProtocolVersion()` / `getApiVersion()` | Name and build (e.g. `BlockNes 1.5.0 beta`), `0.15.10`, `84`, `1.5` |
+| `server().getServerVersion()` / `getGameVersion()` / `getProtocolVersion()` / `getApiVersion()` | Name and build (e.g. `BlockNes 1.6.0 beta`), `0.15.10`, `84`, `1.5` |
 | `server().onlinePlayers()` / `getOps()` / `getConfigString(key, def)` / `getConfigInt` / `getConfigBoolean` | Players, operator names, values from `server.properties` |
 | `name()`, `version()`, `author()`, `description()` | Plugin metadata |
+
+</details>
 
 Colors use the Minecraft `§` codes (`\u00a7a` in Java strings).
 
 ### Player
 
 `Player` objects come from events, commands and `players()`:
+
+<details>
+<summary>Player methods (12 entries)</summary>
 
 | Call | Description |
 | --- | --- |
@@ -659,6 +686,8 @@ Colors use the Minecraft `§` codes (`\u00a7a` in Java strings).
 | `p.getPing()` | Round-trip latency in ms (RakNet ping every second). `-1` until the first answer, and again after 5 s without one |
 | `p.getNameTag()` / `setNameTag(text)` | Text above the head, seen by the players who see `p`. `null` = the real name; at most 256 characters |
 | `p.isNameTagVisible()` / `setNameTagVisible(bool)` | Show or hide that text |
+
+</details>
 
 #### Latency and text above the head
 
@@ -678,11 +707,11 @@ runRepeating(0, 20, () -> {
 
 ### Compiling your plugin
 
-Compile against `plugin-api.jar`, add `plugin.properties` (and an optional `config.properties`) to the jar, and put the result in `plugins/`:
+Compile against `server-plugin-api.jar`, add `plugin.properties` (and an optional `config.properties`) to the jar, and put the result in `plugins/`:
 
 ```sh
 mkdir -p out plugins
-javac -source 11 -target 11 -encoding UTF-8 -cp plugin-api.jar -d out $(find src -name '*.java')
+javac -source 11 -target 11 -encoding UTF-8 -cp server-plugin-api.jar -d out $(find src -name '*.java')
 cp plugin.properties config.properties out/
 jar --create --file plugins/MyPlugin.jar -C out .
 ```
@@ -694,8 +723,8 @@ Restart the server or run `/plugins reload`. If `javac` / `jar` are not availabl
 ```java
 package example;
 
-import mcpe.plugin.Events;
-import mcpe.plugin.Plugin;
+import net.BlockNes.plugin.Events;
+import net.BlockNes.plugin.Plugin;
 
 public class HelloWorld extends Plugin {
     @Override public void onEnable() {
@@ -714,4 +743,155 @@ main=example.HelloWorld
 version=1.0
 author=You
 description=Greets players
-``` 
+```
+
+---
+
+## RakNetLib
+
+RakNetLib is the RakNet implementation the server runs on: UDP sockets, the connection handshake, reliable delivery (acknowledgements, resends and ordering) and server-list pings. It has no dependencies, so you can use it in any Java project. Put `RakNetLib.jar` on your classpath. The package is `net.BlockNes.raknet`.
+
+### Server
+
+```java
+import java.nio.charset.StandardCharsets;
+import net.BlockNes.raknet.RakNet;
+import net.BlockNes.raknet.RakNetServer;
+import net.BlockNes.raknet.Session;
+
+public class RakNetEchoServer {
+    public static void main(String[] args) throws Exception {
+        RakNetServer server = new RakNetServer(19133);
+        server.setLogger(System.out::println);
+        server.setErrorLogger(System.err::println);
+        server.setMotd(() -> "Echo server");
+        server.setListener(new RakNetServer.Listener() {
+            @Override public void onOpen(Session s) {
+                System.out.println("open: " + s.address);
+            }
+            @Override public void onPacket(Session s, byte[] buffer) {
+                // buffer[0] es el ID del paquete (0xFE en paquetes de juego); se devuelve con "pong" al final
+                byte[] pong = "pong".getBytes(StandardCharsets.UTF_8);
+                byte[] reply = new byte[buffer.length + pong.length];
+                System.arraycopy(buffer, 0, reply, 0, buffer.length);
+                System.arraycopy(pong, 0, reply, buffer.length, pong.length);
+                s.sendEncapsulated(reply, RakNet.RELIABLE_ORDERED, 0, false);
+            }
+            @Override public void onClose(Session s, String reason) {
+                System.out.println("close: " + s.address + " " + reason);
+            }
+        });
+        server.bind();
+        System.out.println("listening on UDP port " + server.getPort());
+        server.run();   // bloquea hasta que se llame server.stop()
+    }
+}
+```
+
+It listens on UDP port 19133. Every connected client gets a `Session`, and every packet from it arrives in `onPacket`.
+
+### Client
+
+```java
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import net.BlockNes.raknet.RakNetClient;
+
+public class RakNetEchoClient {
+    public static void main(String[] args) throws Exception {
+        InetSocketAddress server = new InetSocketAddress("127.0.0.1", 19133);
+        System.out.println("motd: " + RakNetClient.ping(server, 2000));
+
+        CountDownLatch done = new CountDownLatch(1);
+        RakNetClient client = new RakNetClient(server);
+        client.setListener(new RakNetClient.Listener() {
+            @Override public void onConnected() {
+                System.out.println("connected, sending hello");
+                client.sendGame("hello".getBytes(StandardCharsets.UTF_8));   // sendGame agrega el 0xFE
+            }
+            @Override public void onPacket(byte[] buffer) {
+                String text = new String(buffer, 1, buffer.length - 1, StandardCharsets.UTF_8);   // se salta el 0xFE
+                System.out.println("reply: " + text);
+                client.disconnect();
+            }
+            @Override public void onDisconnected(String reason) {
+                System.out.println("disconnected: " + reason);
+                done.countDown();
+            }
+        });
+        client.start();
+        done.await(5, TimeUnit.SECONDS);
+        System.out.println("client done");
+    }
+}
+```
+
+Running the two programs prints:
+
+```
+motd: Echo server
+connected, sending hello
+reply: hellopong
+disconnected: Disconnected
+client done
+```
+
+### Compile and run
+
+```sh
+javac -cp RakNetLib.jar RakNetEchoServer.java RakNetEchoClient.java
+java -cp .:RakNetLib.jar RakNetEchoServer     # first terminal
+java -cp .:RakNetLib.jar RakNetEchoClient     # second terminal
+```
+
+On Windows, use `;` instead of `:` in `-cp`.
+
+### How it works
+
+- **Packet IDs.** The first byte of a packet decides who handles it. IDs below `0x80` belong to RakNet itself (pings, connection setup), so your data must start with `0x80` or higher. Minecraft PE uses `0xFE`. `client.sendGame(data)` and `session.sendGame(data, ...)` add that byte for you.
+- **Reliability.** `RakNet.UNRELIABLE` (0), `UNRELIABLE_SEQUENCED` (1), `RELIABLE` (2), `RELIABLE_ORDERED` (3, use this for most data), `RELIABLE_SEQUENCED` (4), and the `_WITH_ACK_RECEIPT` versions (5, 6, 7). The receipt versions report back through `onAckReceipt` whether the packet arrived.
+- **Channels.** Packets on the same ordered channel arrive in order. Use channel `0` unless you need separate streams.
+- **Threads.** `server.run()` blocks its thread until `server.stop()` is called. From other threads, queue work with `server.execute(() -> ...)`. `client.send(...)` already queues the packet for you, and `client.execute(...)` works the same way.
+- **Callbacks** run on the library's thread, so keep them short.
+- **Logs.** `setLogger` and `setErrorLogger` receive the library's messages (`Consumer<String>`), so they can go to your own log.
+
+### Server API
+
+| Method | Description |
+| --- | --- |
+| `new RakNetServer(port)` | Server on a UDP port |
+| `setMotd(Supplier<String>)` | Text answered to server-list pings |
+| `setListener(...)` | `onOpen`, `onPacket`, `onClose` and `onAckReceipt` |
+| `setMaxConnections(n)` / `setMaxConnectionsPerIp(n)` | Connection limits |
+| `ban(ip, millis)` / `unban(ip)` / `isBanned(ip)` | Bans by IP address |
+| `setAcceptedProtocols(...)` | RakNet protocol versions to accept |
+| `getSessions()` / `getSession(address)` | Connected sessions |
+| `send(address, bytes)` | Raw datagram to an address |
+| `bind()` / `run()` / `stop()` | Open the port, run the loop, stop it |
+
+### Session API (server side)
+
+| Method | Description |
+| --- | --- |
+| `address` | The client's `InetSocketAddress` |
+| `sendEncapsulated(bytes, reliability, channel, immediate)` | Send data; returns a receipt id |
+| `sendGame(bytes, reliability, channel, immediate)` | Same, adding the `0xFE` ID |
+| `kick(reason)` | Disconnect the client with a reason |
+| `close(reason, notifyClient)` | Close the session |
+| `getPing()` / `getState()` | Connection info |
+| `getAttachment()` / `setAttachment(obj)` | Store your own data for the player |
+
+### Client API
+
+| Method | Description |
+| --- | --- |
+| `new RakNetClient(address)` | Client for a server address |
+| `setListener(...)` | `onConnected`, `onPacket`, `onDisconnected` and `onAckReceipt` |
+| `start()` / `run()` | Connect in a background thread / in the current thread |
+| `send(bytes, reliability, channel)` | Send data (thread-safe) |
+| `sendGame(bytes)` | Send data with the `0xFE` ID, reliable and ordered |
+| `disconnect()` | Close the connection |
+| `isConnected()` / `getPing()` / `getMtu()` | Connection info |
+| `RakNetClient.ping(address, timeoutMs)` | Server-list ping: returns the MOTD, or `null` if nothing answers |
