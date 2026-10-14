@@ -5,6 +5,7 @@ Reference for writing plugins for BlockNes 1.7.0 beta (plugin API `1.6`, Minecra
 ## Plugin API
 
 Plugins are `.jar` files placed in `plugins/`. They are loaded on startup and on `/plugins reload`. A plugin that crashes never takes the server down.
+Every class of the API jar is listed in the [Class reference](#class-reference) at the end of this file.
 
 > **Breaking change in 1.7.0:** RakNetLib is now its own library, with the package `raknetlib` (it was `net.BlockNes.raknet`). If your plugin imports `net.BlockNes.raknet.*`, change those imports to `raknetlib.*` and compile it again. The plugin API jar still includes the RakNetLib classes.
 
@@ -205,6 +206,7 @@ Overloads: `on(type, handler)`, `on(type, priority, handler)`, `on(type, priorit
 
 </details>
 
+Some events are only built when a plugin listens to them, because building them costs time (for example `MobMove` and `BlockUpdate`, which happen very often). This does not change what a listener gets: a plugin that listens to a base class or to an interface still receives them. `BlockFade` and `EntityTransform` are declared but not fired yet, so listeners for them never run.
 
 Example using the new events:
 
@@ -236,8 +238,8 @@ public void onChat(PlayerChatEvent e) { e.setMessage(e.getMessage().replace("bad
 | Package | Interfaces |
 | --- | --- |
 | `net.BlockNes.event.player` | `PlayerEvent` (category), `PlayerAttackEvent`, `PlayerPickupItemEvent`, `PlayerJoinEvent`, `PlayerQuitEvent`, `PlayerChatEvent`, `PlayerCommandPreprocessEvent`, `PlayerMoveEvent`, `PlayerInteractEvent`, `PlayerDeathEvent`, `PlayerRespawnEvent`, `PlayerGameModeChangeEvent`, `PlayerKickEvent`, `PlayerPreLoginEvent`, `PlayerDropItemEvent`, `PlayerItemConsumeEvent`, `PlayerBedEnterEvent`, `PlayerBedLeaveEvent`, `PlayerToggleSneakEvent`, `PlayerToggleSprintEvent`, `PlayerExhaustEvent`, `PlayerAnimationEvent`, `PlayerItemHeldEvent`, `ItemUseEvent`, `PlayerAchievementAwardedEvent`, `PlayerAuthenticateEvent`, `PlayerChangeDimensionEvent`, `PlayerExperienceChangeEvent`, `PlayerFishEvent`, `PlayerHandshakeEvent`, `PlayerHungerChangeEvent`, `PlayerJumpEvent`, `PlayerLatencyUpdateEvent`, `PlayerLevelChangeEvent`, `PlayerTeleportEvent`, `PlayerTextPreSendEvent` |
-| `net.BlockNes.event.block` | `BlockBreakEvent`, `BlockPlaceEvent`, `SignChangeEvent`, `BlockBurnEvent`, `BlockDropItemEvent`, `BlockFadeEvent`, `BlockFormEvent`, `BlockFromToEvent`, `BlockGrowEvent`, `BlockInteractEvent`, `BlockRedstoneEvent`, `BlockSpreadEvent`, `BlockUpdateEvent`, `LeavesDecayEvent` |
-| `net.BlockNes.event.entity` | `VehicleMountEvent`, `VehicleDestroyEvent`, `EntityEvent` (category), `EntityDamageEvent`, `EntityDeathEvent`, `EntitySpawnEvent`, `EntityRegainHealthEvent`, `EntityTeleportEvent`, `EntityDamageByEntityEvent`, `EntityDespawnEvent`, `EntityExplodeEvent`, `EntityMoveEvent`, `EntityShootBowEvent`, `EntityTargetEvent`, `EntityTransformEvent`, `ExplosionPrimeEvent`, `ProjectileLaunchEvent`, `VehicleDismountEvent` |
+| `net.BlockNes.event.block` | `BlockBreakEvent`, `BlockPlaceEvent`, `SignChangeEvent`, `BlockBurnEvent`, `BlockDropItemEvent`, `BlockFadeEvent` (declared, not fired yet), `BlockFormEvent`, `BlockFromToEvent`, `BlockGrowEvent`, `BlockInteractEvent`, `BlockRedstoneEvent`, `BlockSpreadEvent`, `BlockUpdateEvent`, `LeavesDecayEvent` |
+| `net.BlockNes.event.entity` | `VehicleMountEvent`, `VehicleDestroyEvent`, `EntityEvent` (category), `EntityDamageEvent`, `EntityDeathEvent`, `EntitySpawnEvent`, `EntityRegainHealthEvent`, `EntityTeleportEvent`, `EntityDamageByEntityEvent`, `EntityDespawnEvent`, `EntityExplodeEvent`, `EntityMoveEvent`, `EntityShootBowEvent`, `EntityTargetEvent`, `EntityTransformEvent` (declared, not fired yet), `ExplosionPrimeEvent`, `ProjectileLaunchEvent`, `VehicleDismountEvent` |
 | `net.BlockNes.event.inventory` | `InventoryOpenEvent`, `InventoryCloseEvent`, `CraftItemEvent`, `ArmorEquipEvent`, `FurnaceBurnFuelEvent`, `InventoryClickEvent`, `InventoryTransactionEvent`, `PlayerEnchantItemEvent`, `SmeltItemEvent` |
 | `net.BlockNes.event.server` | `ServerCommandEvent`, `DataPacketReceiveEvent`, `DataPacketSendEvent`, `ConnectionAttemptEvent`, `ConnectionCloseEvent`, `PacketDecodeEvent`, `PacketEncodeEvent`, `ServerStartEvent`, `ServerStopEvent` |
 | `net.BlockNes.event.level` | `LevelSaveEvent`, `ChunkLoadEvent`, `ChunkPopulateEvent`, `ChunkUnloadEvent`, `LightningStrikeEvent`, `ThunderChangeEvent`, `TimeChangeEvent`, `WeatherChangeEvent`, `WorldLoadEvent`, `WorldUnloadEvent` |
@@ -839,3 +841,213 @@ version=1.0
 author=You
 description=Greets players
 ```
+
+## Class reference
+
+Every class, interface and enum in `net.BlockNes` (except `Main`) is in `server-plugin-api.jar`, and so are the RakNetLib classes in `raknetlib`. This section names all of them, with their package and what they do, so you never have to guess a class name or a package.
+
+Each class is marked as one of two things:
+
+- **API**: plugins are meant to use it. It follows the API versions described above.
+- **Internal**: the server uses it. You can read it, but it can change in any version, so do not depend on it. When an internal class does something you need, use the API helper listed next to it (for example `banPlayer` instead of `AccessLists`).
+
+RakNetLib (`raknetlib.*`) is a separate library with its own repository, so its classes are not listed here.
+
+### Names that look alike
+
+- **`Task` and `AsyncTask` exist twice.** `net.BlockNes.plugin.Task` and `net.BlockNes.plugin.AsyncTask` are the ones that `runLater`, `runRepeating` and `runAsync` use. `net.BlockNes.scheduler.Task` and `net.BlockNes.scheduler.AsyncTask` are the ones that `getServer().getScheduler()` uses. Their methods differ: `onRun()` and `onCompletion()` in `plugin`, `onRun(long currentTick)` and `onCompletion(Server)` in `scheduler`.
+- **`Item` and `ItemEntity`.** `Item` is an item stack (in an inventory, a menu or a recipe). `ItemEntity` is an item lying on the ground (internal).
+- **`Level` and `World`.** `Level` is the world that plugins see. `World` is the internal world behind it.
+- **`Command` and `command(...)`.** `Command` is a command written as a class. `command(...)` takes a lambda instead.
+- **`Events.PlayerJoin` and `PlayerJoinEvent`.** The first one is what you pass to `on(...)`. The second one is an interface you can listen to instead. See *Events*.
+- **Block ids are plain numbers.** There is no class of block constants: for example `1` is stone and `4` is cobblestone. Mob ids and enchantment ids do have constants (`Mob` and `Enchantments`).
+
+### API classes
+
+#### Server and players
+
+| Class | What it is |
+| --- | --- |
+| `net.BlockNes.Server` | The server. Get it with `getServer()` in a plugin, or `Server.getInstance()`. |
+| `net.BlockNes.Player` | A connected player. See *Player*. |
+
+#### net.BlockNes.plugin
+
+| Class | What it is |
+| --- | --- |
+| `Plugin` | Base class of your plugin. Its helpers (`on`, `command`, `runLater`, `menu`, `config`...) are described above. |
+| `PluginBase` | The same as `Plugin`, with the PocketMine-MP name. |
+| `PluginManager` | Loads and enables plugins. `getPluginManager()`. |
+| `PluginDescription` | Read-only data from `plugin.properties`. `getDescription()`. |
+| `PluginLogger` | Logger with your plugin's prefix. `getLogger()`: `info`, `warning`, `error`, `debug`, `logException`. |
+| `Events` | Holds the event classes, such as `Events.PlayerJoin`. See *Events*. |
+| `Event` | Base class of every event: `isCancelled()`, `setCancelled(boolean)`, `getEventName()`. Extend it and send it with `fire(...)`. |
+| `EventHandler` | Annotation for the methods of a listener class. |
+| `Priority` | Order of the handlers: `LOWEST`, `LOW`, `NORMAL`, `HIGH`, `HIGHEST`, `MONITOR`. |
+| `Command` | A command written as a class: usage, aliases and permission. Register it with `registerCommand(...)`. |
+| `PluginCommand` | Interface of the lambda in `command(name, description, usage, permission, (sender, args) -> ...)`. |
+| `Permission` | A registered permission node, from `getPermission(node)`. |
+| `PermissionDefault` | Default value of a permission: `OP`, `NOT_OP`, `TRUE` or `FALSE`. |
+| `PermissionAttachment` | Temporary permissions for one player, from `addAttachment(player)`. |
+| `Config` | The plugin's `config.properties`, with typed getters. `config()`. |
+| `JsonConfig` | A JSON file in the plugin folder, with dotted paths. `jsonConfig("data.json")`. |
+| `PlayerStore` | One JSON file per player. `playerData()`. |
+| `Menu` | Chest menu with buttons. `menu(rows)`. |
+| `HudPosition` | Side of the scoreboard: `RIGHT`, `LEFT` or `CENTER`. |
+| `Region` | Block region with `fill`, `replace`, `count`, `copy` and `paste`. `Region.Snapshot` is a copy. |
+| `Text` | Helpers for colors, bars, times and numbers. |
+| `Args` | Safe readers for command arguments: a missing or bad value returns the default. |
+| `Cooldowns` | Cooldowns per key: `tryUse(key, ms)` and `remainingSeconds(key)`. |
+| `Task` | The task that `runLater` and `runRepeating` return: `cancel()`, `id()`, `isRepeating()`. |
+| `AsyncTask` | Background task for `runAsync(new AsyncTask() { ... })`. |
+
+#### Events
+
+The event interfaces are in `net.BlockNes.event.player`, `block`, `entity`, `inventory`, `level`, `server` and `plugin`, and they are all listed in *All event interfaces* above. There are 96 of them. The three category interfaces (`PlayerEvent`, `EntityEvent` and `PluginEvent`) group them and are not events themselves. `Cancellable` and `Listener` are in `net.BlockNes.event`.
+
+Having an interface does not mean the server fires that event. Two of them are declared but no event is fired for them yet: `BlockFadeEvent` and `EntityTransformEvent`. The Events table marks them. The other 94 are fired from at least one place in the server, and the Events table lists their main cases.
+
+#### net.BlockNes.scheduler
+
+| Class | What it is |
+| --- | --- |
+| `ServerScheduler` | The scheduler. `getServer().getScheduler()`. |
+| `Task` | Task for the scheduler: implement `onRun(long currentTick)`. `onCancel()` runs if it is cancelled. |
+| `AsyncTask` | Task for `scheduleAsyncTask`: `onRun()` runs on another thread and `onCompletion(Server)` on the server thread. |
+| `PluginTask` | Task that belongs to a plugin: extend it and call `super(plugin)`. It is cancelled when the plugin is disabled. |
+| `TaskHandler` | What the `schedule...` methods return: `getTaskId()`, `cancel()`, `isCancelled()`, `isRepeating()`. |
+
+#### net.BlockNes.command
+
+| Class | What it is |
+| --- | --- |
+| `CommandMap` | The command registry. `getCommandMap()`: list, find, register and remove commands. |
+| `CommandExecutor` | Interface of the lambda in `command(name, description, usage, permission, (sender, command, label, args) -> ...)`. Return `false` to show the usage line. |
+| `CommandSender` | Whoever runs a command: `name()`, `isOp()`, `send(String)`. |
+| `Commands.Sender` | The `sender` type in the `command(...)` lambdas that use `PluginCommand`. It extends `CommandSender`. |
+| `ConsoleCommandSender` | The console as a sender. `getConsoleSender()`. It is always an operator. |
+
+#### net.BlockNes.level, math, item, metadata, mob, util and network.protocolo
+
+| Class | What it is |
+| --- | --- |
+| `net.BlockNes.level.Level` | A world. One per dimension (0 overworld, 1 nether): `getLevelByName(...)`, `getDefaultLevel()`, `player.getLevel()`. |
+| `net.BlockNes.level.Position` | A `Vector3` with its `Level`: `getLevel()`. |
+| `net.BlockNes.level.Weather` | Weather constants for `setWeather`: `SUNNY`, `RAINY`, `RAINY_THUNDER`, `THUNDER`. |
+| `net.BlockNes.math.Vector3` | Immutable point or vector. |
+| `net.BlockNes.item.Item` | Immutable item stack: `Item.get(id, damage, count)`, `withName`, `withLore`, `withCount`. |
+| `net.BlockNes.item.PlayerInventory` | The player's inventory, which updates the client. `player.getPlayerInventory()`. |
+| `net.BlockNes.item.Inventory` | The raw inventory from `player.getInventory()`: 36 slots and 4 armor slots. It does not update the client, so prefer `PlayerInventory`. |
+| `net.BlockNes.item.Enchantments` | Enchantment ids as constants, from `PROTECTION` (0) to `FISHING_LURE` (24). `COUNT` is 25 and `ENCHANTED_BOOK` is 403. |
+| `net.BlockNes.item.Recipes` | The recipe list, `server().recipes`, with `all`. `Recipes.Recipe` is one recipe: the type that `removeRecipe` takes. |
+| `net.BlockNes.mob.Mob` | Mob ids as constants, for `spawnMob`, such as `Mob.ZOMBIE` and `Mob.COW`. The full list is below. |
+| `net.BlockNes.metadata.Metadatable` | Interface of objects that can hold plugin metadata: players and levels. |
+| `net.BlockNes.metadata.MetadataValue` | A metadata value: `value()`, `asInt()`, `asLong()`, `asDouble()`, `asString()`, `asBoolean()`. |
+| `net.BlockNes.metadata.FixedMetadataValue` | A `MetadataValue` with a fixed value: `new FixedMetadataValue(plugin, value)`. |
+| `net.BlockNes.util.TextFormat` | Color and style codes: `TextFormat.RED`, `TextFormat.BOLD`, `TextFormat.RESET`. `TextFormat.clean(text)` removes them. |
+| `net.BlockNes.network.protocolo.Info` | Packet ids, such as `Info.LOGIN` or `Info.MOVE_PLAYER`, and `Info.VERSION` (84). Use them with `PacketReceive`, `PacketSend` and `server().send(...)`. |
+
+`Mob` ids: CHICKEN 10, COW 11, PIG 12, SHEEP 13, WOLF 14, VILLAGER 15, MOOSHROOM 16, SQUID 17, RABBIT 18, BAT 19, IRON_GOLEM 20, SNOW_GOLEM 21, OCELOT 22, ZOMBIE 32, CREEPER 33, SKELETON 34, SPIDER 35, PIG_ZOMBIE 36, SLIME 37, ENDERMAN 38, SILVERFISH 39, CAVE_SPIDER 40, GHAST 41, LAVA_SLIME 42, BLAZE 43, ZOMBIE_VILLAGER 44, WITCH 45, STRAY 46, HUSK 47.
+
+### Internal classes
+
+These classes are in the jar because the server is built from them. Plugins should use the API helper in the last column of the table instead of calling them directly.
+
+<details>
+<summary>Internal classes (140)</summary>
+
+| Class | Package | What it does | Use instead |
+| --- | --- | --- | --- |
+| `Achievements` | `net.BlockNes` | Achievement rules (`mineWood`, `diamond`), each given once per player | Event `PlayerAchievementAwarded` |
+| `AccessLists` | `net.BlockNes` | Ban and white-list files | `banPlayer`, `banIp`, `whitelistAdd`... |
+| `Setup` | `net.BlockNes` | First-run wizard that picks the language | Nothing |
+| `Operators` | `net.BlockNes.admin` | Operator list (`ops.txt`) | `isOp`, `setOp`, `getOps` |
+| `ServerSettings` | `net.BlockNes.admin` | Values of `server.properties` | `getConfigString`, `getConfigInt`, `getConfigBoolean` |
+| `Messenger` | `net.BlockNes.chat` | Chat messages, tips and popups | `message`, `broadcast`, `tip`, `popup` |
+| `Commands` | `net.BlockNes.command` | Runs commands from the console and the chat | `Commands.Sender` is API (see above) |
+| `Console` | `net.BlockNes.command` | Reads commands from the terminal | Nothing |
+| `RecipeBook` | `net.BlockNes.craft` | Adds, removes and sends recipes to the clients | `addShapedRecipe`, `addShapelessRecipe`, `removeRecipe` |
+| `Json` | `net.BlockNes.datos` | Minimal JSON parser used by `JsonConfig` | `jsonConfig(...)` |
+| `PlayerData` | `net.BlockNes.datos` | Saves player data | `playerData()` |
+| `Resources` | `net.BlockNes.datos` | Data files inside the jar (`recipes.json`, `creativeitems.json`) | Nothing |
+| `ServerProperties` | `net.BlockNes.datos` | Reads `server.properties`, creates it if missing and adds missing keys | `getConfigString`, `getConfigInt`, `getConfigBoolean` |
+| `Lang` | `net.BlockNes.lang` | Server languages for the terminal and player messages | Nothing |
+| `MenuManager` | `net.BlockNes.menu` | Opens, closes and fills menus | `menu`, `openMenu`, `closeMenu` |
+| `Nbt` | `net.BlockNes.nbt` | Minimal little-endian NBT for block entities and client data | Nothing |
+| `Hud` | `net.BlockNes.plugin` | Scoreboard and title emulation | `hudLine`, `title`, `bossBar`... |
+| `Permissions` | `net.BlockNes.plugin` | Reads `plugins/permissions.properties` | `hasPermission` |
+| `Banner` | `net.BlockNes.util` | Startup banner | Nothing |
+| `Log` | `net.BlockNes.util` | Console log in PocketMine-MP format, also saved to `server.log` | `getLogger()` |
+| `PassProgress` | `net.BlockNes.util` | Progress lines during startup ("Preparing spawn area") | Nothing |
+| `Chunk` | `net.BlockNes.level` | A 16 x 128 x 16 column of blocks | Nothing |
+| `Experience` | `net.BlockNes.level` | XP needed per level, and XP from blocks and mobs | `giveXp` |
+| `FlatWorld` | `net.BlockNes.level` | Flat world generator | Nothing |
+| `Light` | `net.BlockNes.level` | Block light and sky light of a chunk | Nothing |
+| `NetherPortal` | `net.BlockNes.level` | Nether portal frame rules | Nothing |
+| `NetherWorld` | `net.BlockNes.level` | Nether terrain generator | Nothing |
+| `NormalWorld` | `net.BlockNes.level` | Normal terrain generator | Nothing |
+| `World` | `net.BlockNes.level` | The editable world behind `Level`: chunks in memory, saved to disk when modified | `Level` |
+| `WorldGenerator` | `net.BlockNes.level` | Interface for world generators | Nothing |
+| `WorldLayout` | `net.BlockNes.level` | World folders (`worlds/world`, `worlds/nether`) | Nothing |
+| `XpOrbs` | `net.BlockNes.level` | Experience orbs | Nothing |
+| `Armor` | `net.BlockNes.item` | Armor rules and damage reduction, ported from PocketMine-MP | Nothing |
+| `CreativeItems` | `net.BlockNes.item` | Creative inventory list (`creativeitems.json`) | Nothing |
+| `EnchantTable` | `net.BlockNes.item` | Enchanting table: bookshelves, levels and options | Nothing |
+| `EnchantTableData` | `net.BlockNes.item` | Generated enchanting tables, not edited by hand | Nothing |
+| `Food` | `net.BlockNes.item` | Food rules: hunger, saturation and effects | Nothing |
+| `ItemEntities` | `net.BlockNes.item` | Items on the ground: spawn, physics, pickup and despawn | Events `ItemPickup`, `PlayerDropItem` |
+| `ItemEntity` | `net.BlockNes.item` | One item lying on the ground | Nothing |
+| `Potions` | `net.BlockNes.item` | Potion table: effects, durations and colors | Nothing |
+| `BedLogic` | `net.BlockNes.block` | Bed rules: place, activate and break | Nothing |
+| `BlockLogic` | `net.BlockNes.block` | Scheduled and random block updates: liquids, leaves, grass, mycelium | Nothing |
+| `Blocks` | `net.BlockNes.block` | Basic block rules: transparency, replaceable blocks, collision, placement metadata | Nothing |
+| `ChestTile` | `net.BlockNes.block` | Chest of 27 slots; two chests side by side form a 54-slot double chest | Nothing |
+| `Drops` | `net.BlockNes.block` | What each block drops and which tool it needs | Event `BlockDropItem` |
+| `EnchantTile` | `net.BlockNes.block` | Enchanting table block entity, which the client needs to open the table | Nothing |
+| `EnderChests` | `net.BlockNes.block` | Ender chest contents: one 27-slot inventory per player | Nothing |
+| `FlowerPotTile` | `net.BlockNes.block` | Flower pot contents | Nothing |
+| `FurnaceTile` | `net.BlockNes.block` | Furnace: 3 slots, burn and cook times | Events `SmeltItem`, `FurnaceBurnFuel` |
+| `Interactions` | `net.BlockNes.block` | Breaking, placing and activating blocks | Events `BlockBreak`, `BlockPlace`, `PlayerInteract` |
+| `PmBlockData` | `net.BlockNes.block` | Generated tables: light emission, light filter, solid and transparent | Nothing |
+| `PmBlockStats` | `net.BlockNes.block` | Generated hardness and blast resistance | Nothing |
+| `Rails` | `net.BlockNes.block` | Rail shapes and connections | Nothing |
+| `Redstone` | `net.BlockNes.block` | Redstone and mechanisms: levers, buttons, pressure plates, wire, repeaters, lamps, TNT, doors | Event `BlockRedstone` |
+| `SignTile` | `net.BlockNes.block` | Sign: 4 lines of text and who placed it | Event `SignChange` |
+| `SkullTile` | `net.BlockNes.block` | Heads: skeleton, wither skeleton, zombie, player and creeper | Nothing |
+| `Tile` | `net.BlockNes.block` | Base of the block entities (chests, signs...) | Nothing |
+| `Mobs` | `net.BlockNes.mob` | Mob manager: natural spawns, despawns and the life cycle of mobs | `spawnMob`, `mobsIn`, `mobsNear` |
+| `HostileAI` | `net.BlockNes.mob.ai` | Hostile mobs: zombies, skeletons, creepers, spiders, endermen, witches | Nothing |
+| `MobAI` | `net.BlockNes.mob.ai` | Behaviour of each mob type | Nothing |
+| `PassiveAI` | `net.BlockNes.mob.ai` | Passive mobs: animals, villagers, golems, squids, bats | Nothing |
+| `Paintings` | `net.BlockNes.mob.decor` | Paintings that fit on a wall | Nothing |
+| `Hooks` | `net.BlockNes.mob.projectiles` | Fishing hook | Event `PlayerFish` |
+| `Projectiles` | `net.BlockNes.mob.projectiles` | Snowballs, eggs, arrows, thrown potions and experience bottles | Event `ProjectileLaunch` |
+| `Boats` | `net.BlockNes.mob.vehicles` | Boats | Events `VehicleMount`, `VehicleDestroy` |
+| `Dismount` | `net.BlockNes.mob.vehicles` | Where a player lands when getting off a boat or a minecart | Event `VehicleDismount` |
+| `Minecarts` | `net.BlockNes.mob.vehicles` | Minecarts on rails | Events `VehicleMount`, `VehicleDestroy` |
+| `MetadataStore` | `net.BlockNes.metadata` | Stores the metadata of players and levels | `setMetadata`, `getMetadata` |
+| `PortalManager` | `net.BlockNes.world` | Nether portals and dimension changes | Events `PlayerChangeDimension` |
+| `TimeAndWeather` | `net.BlockNes.world` | Time of day, weather, storms and lightning | `setTime`, `setWeather` |
+| `WorldEditor` | `net.BlockNes.world` | Block changes, level events, explosions, mobs and entities | `setBlock`, `explode`, `playLevelEvent` |
+| `ChunkStreamer` | `net.BlockNes.players` | Sends chunks to each player by position and view radius | Nothing |
+| `JoinHandler` | `net.BlockNes.players` | Joining: login, creation and spawn | Events `PlayerPreLogin`, `PlayerJoin` |
+| `LoginParser` | `net.BlockNes.players` | Validates names and reads the UUID and the JWT | Nothing |
+| `PlayerThread` | `net.BlockNes.players` | The thread of each player, where its packets run | Nothing |
+| `PlayerVisibility` | `net.BlockNes.players` | Who sees whom: spawning and despawning players | Nothing |
+| `Query` | `net.BlockNes.network.query` | GS4 query on the game's UDP port (`enable-query`) | `server.properties` |
+| `Rcon` | `net.BlockNes.network.rcon` | Remote console over TCP (`enable-rcon`) | `server.properties` |
+| `UPnP` | `net.BlockNes.network.upnp` | Opens the port on the router (`network.upnp-forwarding`) | `server.properties` |
+| `ActionHandler` | `net.BlockNes.network.handlers` | Animations, entity events and the held item | Nothing |
+| `BlockHandler` | `net.BlockNes.network.handlers` | Breaking blocks, using items and interacting | Nothing |
+| `ChatHandler` | `net.BlockNes.network.handlers` | Chat messages from players | Event `PlayerChat` |
+| `CraftingHandler` | `net.BlockNes.network.handlers` | The crafting packet from the client | Event `CraftItem` |
+| `InventoryHandler` | `net.BlockNes.network.handlers` | Slot changes and dropping items | Events `InventoryClick`, `PlayerDropItem` |
+| `LoginHandler` | `net.BlockNes.network.handlers` | Reads the login packet (name, UUID, JWT) | Nothing |
+| `MovementHandler` | `net.BlockNes.network.handlers` | Movement and chunk radius requests | Event `PlayerMove` |
+| `PacketRouter` | `net.BlockNes.network.handlers` | Receives RakNet packets and sends each one to its handler | Events `PacketReceive`, `PacketSend` |
+
+The rest of `net.BlockNes.network.protocolo` (53 classes, internal) is the packet encoding for protocol 84. `Metadatos` builds entity metadata and `Paquete` is the base class of every packet. The packet classes are:
+
+AddEntityPacket, AddItemEntityPacket, AddPaintingPacket, AddPlayerPacket, AdventureSettingsPacket, AnimatePacket, BlockEntityDataPacket, BlockEventPacket, ChangeDimensionPacket, ChunkRadiusUpdatedPacket, ContainerClosePacket, ContainerOpenPacket, ContainerSetContentPacket, ContainerSetDataPacket, ContainerSetSlotPacket, DisconnectPacket, DropItemPacket, EntityEventPacket, ExplodePacket, FullChunkDataPacket, HurtArmorPacket, InteractPacket, ItemFrameDropItemPacket, LevelEventPacket, MobArmorEquipmentPacket, MobEffectPacket, MobEquipmentPacket, MoveEntityPacket, MovePlayerPacket, PlayStatusPacket, PlayerActionPacket, PlayerInputPacket, PlayerListPacket, RemoveBlockPacket, RemoveEntityPacket, RequestChunkRadiusPacket, RespawnPacket, SetDifficultyPacket, SetEntityDataPacket, SetEntityLinkPacket, SetEntityMotionPacket, SetHealthPacket, SetPlayerGameTypePacket, SetSpawnPositionPacket, SetTimePacket, StartGamePacket, TakeItemEntityPacket, TextPacket, UpdateAttributesPacket, UpdateBlockPacket, UseItemPacket.
+
+</details>
