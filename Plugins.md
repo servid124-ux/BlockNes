@@ -1,1053 +1,1528 @@
-# BlockNes plugins
+# BlockNes Plugin API
 
-Reference for writing plugins for BlockNes 1.7.0 beta (plugin API `1.6`, Minecraft PE 0.15.10, protocol 84). Server settings, commands and files are in [README.md](README.md).
+**API version 1.7** · BlockNes **1.2.0** · Minecraft: Pocket Edition **0.15.10** (protocol 84)
 
-## Plugin API
+This guide explains how plugins work in BlockNes: how to build one, how the server loads it, and everything the API gives you (events, commands, permissions, tasks, config files, menus, recipes, regions, the HUD and more).
 
-Plugins are `.jar` files placed in `plugins/`. They are loaded on startup and on `/plugins reload`. A plugin that crashes never takes the server down.
-Every class of the API jar is listed in the [Class reference](#class-reference) at the end of this file.
+Plugins are written in **Java** and shipped as a `.jar` file in the server's `plugins/` folder. A plugin that crashes never takes the server down.
 
-> **Breaking change in 1.7.0:** RakNetLib is now its own library, with the package `raknetlib` (it was `net.BlockNes.raknet`). If your plugin imports `net.BlockNes.raknet.*`, change those imports to `raknetlib.*` and compile it again. The plugin API jar still includes the RakNetLib classes.
+> If you know PocketMine-MP or Bukkit, you will feel at home: many classes and method names are the same on purpose (`Plugin`, `PluginBase`, `Listener`, `@EventHandler`, `Server.getInstance()`, `ServerScheduler`, `Level`, `Vector3`, `PlayerChatEvent`...). BlockNes also has a shorter "native" style (`on(Events.PlayerChat.class, e -> ...)`). Both work and you can mix them.
 
-The API version is `1.6` (`server().getApiVersion()`). Plugins built for earlier versions of this API keep loading, because the API only adds to what was there. Version 1.2 adds `p.getPing()` and the text above the head (`p.setNameTag()`, see *Player*); a plugin that uses them declares `api=1.2`.
+## Table of contents
 
-Version 1.3 adds the access-control and server-setting helpers listed below (`banPlayer`, `whitelistAdd`, `isPvpEnabled`, ...). A plugin that declares `api=1.3` needs this version or newer; plugins for older versions keep loading.
+1. [How it works](#how-it-works)
+2. [Quick start: your first plugin](#quick-start-your-first-plugin)
+3. [Building a plugin](#building-a-plugin) (including [source plugins, no jar](#source-plugins-no-jar-needed))
+4. [plugin.properties reference](#pluginproperties-reference)
+5. [Lifecycle and load order](#lifecycle-and-load-order)
+6. [Plugin API](#plugin-api)
+   - [Information and logging](#information-and-logging)
+   - [Listening to events](#listening-to-events)
+   - [Commands](#commands)
+   - [Permissions](#permissions)
+   - [Tasks and threads](#tasks-and-threads)
+   - [Config and data files](#config-and-data-files)
+   - [Players and server](#players-and-server)
+   - [World, mobs and items](#world-mobs-and-items)
+   - [Menus](#menus)
+   - [Recipes](#recipes)
+   - [Regions](#regions)
+   - [HUD: scoreboard, titles, boss bars](#hud-scoreboard-titles-boss-bars)
+   - [Services: talking to other plugins](#services-talking-to-other-plugins)
+   - [Text, arguments and cooldowns](#text-arguments-and-cooldowns)
+   - [Translations](#translations)
+7. [Events](#events)
+8. [API 1.6 additions (inside `Plugin`)](#api-16-additions-inside-plugin)
+9. [API 1.7 additions (inside `Plugin`)](#api-17-additions-inside-plugin)
+10. [Limits, errors and performance](#limits-errors-and-performance)
+11. [Full example: an economy and a shop](#full-example-an-economy-and-a-shop)
+12. [Things to know (limitations)](#things-to-know-limitations)
+13. [Troubleshooting](#troubleshooting)
 
-Version 1.5 adds menus with buttons, recipes added by plugins, regions, per-player data, item names and lore, and argument helpers for commands (see *API 1.5 additions*). A plugin that uses them declares `api=1.5`; plugins for older versions keep loading.
+---
 
-Version 1.6 adds a server facade, a scheduler with `Task`, `PluginTask` and `AsyncTask`, a command map with `CommandExecutor`, event interfaces, `Level`, `Position`, `Vector3`, metadata, `TextFormat`, `Item.get(...)` and `getPlayerInventory()` (see *API 1.6 additions*). A plugin that uses them declares `api=1.6`; plugins for earlier versions keep loading.
+## How it works
 
-BlockNes 1.7.0 adds more events (see *Events*) without changing the API version. A plugin that uses them only works on 1.7.0 or newer, even if it still declares `api=1.6`.
+- A plugin is a `.jar` in `plugins/`. Inside the jar there is a `plugin.properties` file at the root and a **main class** that extends `Plugin` (or `PluginBase`, which is the same thing).
+- On startup (and on `/plugins reload`) the server reads every jar, sorts the plugins by their dependencies, creates one instance of each main class and calls `onLoad()`, then `onEnable()`.
+- Everything a plugin registers (event handlers, commands, tasks, permissions, services, HUD lines, menus, recipes, metadata) belongs to that plugin. **When the plugin is disabled, the server removes all of it for you.**
+- All handlers, commands and tasks run on the **server thread**, once per tick (20 ticks = 1 second). Do not block it: use [`runAsync`](#tasks-and-threads) for slow work such as HTTP or databases.
+- Each plugin gets its own class loader. A plugin sees the server classes, its own classes, and the classes of the plugins it lists in `depend` / `softdepend`.
+- Errors are isolated. An exception in an event handler, a command or a task is logged (with the plugin's name) and the server keeps going. The other handlers still run.
 
-**Limits.** There are no limits by default: a handler that throws is logged and the other handlers keep running, and a plugin can have as many pending tasks as it needs. To turn the protection on, set `plugin-max-errors`, `plugin-max-slow-calls` and/or `plugin-max-tasks` in `server.properties` (for example 100, 1000 and 5000). A plugin is then disabled after that many handler errors or slow calls (calls slower than 100 ms), and more pending tasks than the limit make `runLater`, `runRepeating` and the scheduler throw an `IllegalStateException`.
+Folders involved:
 
-### What plugins can and can't change
-
-Plugins can change most of the game logic. Here is what they can touch, and where the limits are.
-
-**Plugins can change**
-
-- **Players:** chat text, format and recipients; commands; movement; clicks on blocks and air; damage, death and respawn; game mode, health, food and XP; permissions; teleports; kicks and bans; fishing, bow shots, projectiles and achievements.
-- **Blocks and the world:** block breaks and placements, sign text, the blocks an explosion destroys, `setBlock` and regions, time, weather and lightning, fire, liquid flow, leaf decay and the items a block drops.
-- **Mobs:** spawning by protocol id, damage, spawn, death and drops.
-- **Items and crafting:** crafting, shaped and shapeless recipes, item names and lore, and chest-style menus.
-- **Packets:** read and cancel raw packets with `PacketReceive` and `PacketSend`, and send your own bytes with `server().send(player, bytes)`.
-- **Server:** commands, the scheduler, your own data files, and services shared between plugins.
-
-Cancelable events stop the action. Editable fields change its result, for example the chat message or the damage amount.
-
-**What the protocol doesn't allow (Minecraft PE 0.15.10, protocol 84)**
-
-- Titles, boss bars and scoreboards are not packets in this version. The API emulates them with the tip and popup channels, so the result depends on the client.
-- No custom blocks, items, mobs or particles. The ids are the ones 0.15.10 knows, and `spawnMob` returns `null` for an unknown id.
-- Menus are chest windows with 3 or 6 rows, and they have no title.
-- Item names are at most 128 characters per line, and lore has at most 16 lines.
-- Furnace recipes are not part of the recipes API.
-- Your own packets must use the layouts of protocol 84. You can send them, but you cannot add new packet types.
-
-**What the server core doesn't expose**
-
-- The tick rate: the server runs at 20 ticks per second, and no API changes it.
-- The transport: RakNet's reliability, resends and handshake are internal. Use `getPing()`, `kick()` and the packet events instead.
-- World generation: there is no hook to change how new chunks are generated. `ChunkPopulate` only tells you when a chunk is ready.
-- Mob AI and pathfinding, block updates, crop growth and redstone: `MobTarget`, `MobMove`, `BlockUpdate`, `BlockGrow` and `BlockRedstone` only tell you what happened. There is no API to change them.
-- Furnace smelting and burning: `SmeltItem` and `FurnaceBurnFuel` only tell you what happened. There is no API to change them.
-- Player data files (`players/*.dat`): use `playerData()` for your own data.
-- `server.properties`: no API method writes it. Read it with `server().getConfigString(key, def)`, `getConfigInt` and `getConfigBoolean`.
-
-### Plugin layout
-
-Compile your plugin against `server-plugin-api.jar`; the finished plugin jar goes in `plugins/`. A plugin jar needs a `plugin.properties` file in its root and a main class that extends `net.BlockNes.plugin.Plugin` and has a public no-argument constructor.
-
-```properties
-name=HelloWorld
-main=example.HelloWorld
-version=1.0
-author=You
-description=What the plugin does
-# everything below is optional
-website=https://example.com
-prefix=HW
-api=1.1
-depend=RequiredPlugin,AnotherOne
-softdepend=OptionalPlugin
-loadbefore=SomePlugin
-```
-
-- `author` / `authors`: `authors=You,Ana` lists several people; `author()` returns them joined with `, `.
-- `depend`: these plugins must be loaded first, otherwise your plugin is not loaded.
-- `softdepend`: loaded before yours if they exist.
-- `loadbefore`: your plugin is loaded before these, when they are present.
-- `prefix`: the text in brackets at the start of your log lines (default: the plugin name).
-- `api`: the minimum API version your plugin needs. This server has API `1.6`; a plugin that asks for a newer one is not loaded and a warning is printed.
-- `permissions.<node>.…` and `commands.<name>.…` declare permissions and commands (see below).
-- An optional `config.properties` in the jar root is copied to `plugins/<Name>/config.properties` on first run.
-
-### Lifecycle
-
-```java
-public class HelloWorld extends Plugin {
-    @Override public void onLoad()    { }   // jar loaded, nothing enabled yet
-    @Override public void onEnable()  { }   // register events, commands and tasks here
-    @Override public void onDisable() { }   // server stopping or /plugins reload
-}
-```
-
-Events, commands, tasks, permissions and attachments registered by a plugin are removed automatically after `onDisable()`. Its menus are closed (their `onClose` runs), its recipes are removed and its player data is saved.
-
-Plugins can be switched individually without restarting: `/plugins disable <name>` (also disables plugins that `depend` on it) and `/plugins enable <name>` (OP only; re-reads the jar). `/plugins reload` still reloads everything.
-
-### Events
-
-Register with `on(Events.X.class, e -> ...)`. Handlers run with the game lock held, never two at once: on the game thread or on the thread of the player who triggered them. You can touch players and worlds without locks of your own.
-
-```java
-on(Events.PlayerJoin.class, e -> message(e.player, "Welcome " + e.player.name));
-on(Events.BlockPlace.class, Priority.HIGH, true, e -> { if (e.id == 46) e.setCancelled(true); });
-```
-
-Overloads: `on(type, handler)`, `on(type, priority, handler)`, `on(type, priority, ignoreCancelled, handler)`.
-`Priority` order: `LOWEST`, `LOW`, `NORMAL`, `HIGH`, `HIGHEST`, `MONITOR` (last; observe only).
-
-<details>
-<summary>Eventos principales de la API</summary>
-
-| Event | Cancelable | Fields / notes |
-| --- | --- | --- |
-| `PlayerJoin` | no | `player` |
-| `PlayerQuit` | no | `player` |
-| `PlayerChat` | yes | `message` (editable), `format` (optional `String.format` pattern taking the name and the message, e.g. `"<%s> %s"`; `null` = normal format), `recipients` (editable list; everyone logged in by default) |
-| `PlayerCommand` | yes | `line` (text starting with `/`) |
-| `PlayerMove` | yes | `fromX/Y/Z`, `toX/Y/Z`; fires when the block changes |
-| `PlayerInteract` | yes | `air`, `x`, `y`, `z`, `face`, `item` |
-| `PlayerDamage` | yes (not forced damage) | `amount` (editable), `cause`, `forced`, `attacker` |
-| `PlayerDeath` | no | `message` (null = none), `keepInventory` |
-| `PlayerRespawn` | no | `player` |
-| `PlayerGamemode` | yes | `from`, `to` |
-| `BlockBreak` | yes | `x`, `y`, `z`, `id`, `meta` |
-| `BlockPlace` | yes | `x`, `y`, `z`, `id`, `meta` |
-| `MobDamage` | yes | `mob`, `by` (may be null), `amount` (editable) |
-| `MobDeath` | no | `mob`, `killer`, `drops` (editable list) |
-| `MobSpawn` | yes | `mob`, `natural` |
-| `ItemPickup` | yes | `item` |
-| `ServerTick` | no | `tick` (20 per second) |
-| `PlayerPreLogin` | yes | `kickMessage` (editable); cancelling kicks the player before joining |
-| `PlayerKick` | yes | `reason` (editable) |
-| `EntityCombust` | yes | `eid`, `player` (`null` for mobs), `cause`, `seconds`. Cancelled = it does not catch fire |
-| `PlayerDropItem` | yes | `item`; cancelling gives the item back |
-| `PlayerItemConsume` | yes | `item` (eating / drinking) |
-| `PlayerBedEnter` / `PlayerBedLeave` | yes / no | `x`, `y`, `z` |
-| `PlayerHeal` | yes | `amount` (editable) |
-| `PlayerExhaust` | yes | `amount` (editable): how much food and saturation the exertion costs |
-| `PlayerAnimation` | yes | `action` (`1` = arm swing); cancelling hides it from the other players |
-| `PlayerItemHeld` | no | `item`, `slot`, `hotbarSlot`; fires after the player changes the item in hand |
-| `CraftItem` | yes | `input` (ingredients about to be used), `result`; cancelling uses no ingredients and gives no result |
-| `PlayerToggleSneak` / `PlayerToggleSprint` | yes | `sneaking` / `sprinting` |
-| `InventoryOpen` | yes | `type` (`chest`, `enderchest`, `workbench`, `furnace`), `x`, `y`, `z` |
-| `InventoryClose` | no | `player` |
-| `MenuClick` | yes | `menu`, `slot`, `item` (what the slot held), `proposed` (what the client tried to put there). The change is always reverted; cancelling skips the slot's handler (API 1.5) |
-| `SignChange` | yes | `x`, `y`, `z`, `lines` (4, editable) |
-| `Explosion` | yes | `dimension`, `x`, `y`, `z`, `size`, `blocks` (`{x,y,z,id}` list; remove entries to save blocks) |
-| `ServerCommand` | yes | console only: `sender`, `line` (editable) |
-| `PacketReceive` | yes | `id`, `data` (raw packet from a player, before the server handles it) |
-| `PacketSend` | yes | `data` (raw packet sent through `Server.send`) |
-| `LevelSave` | no | fired after every world save |
-| `PluginEnable` / `PluginDisable` | no | `plugin` |
-| `PlayerAttack` | yes | `targetEntityId`, `targetPlayer` o `targetMob`, `weapon`, `damage` editable; permite cancelar o ajustar el dano antes del golpe a jugadores o mobs |
-| `VehicleMount` | yes | `player`, `vehicle` (`BOAT` / `MINECART`), `vehicleEntityId`, `x/y/z`; cancelar impide montar |
-| `VehicleDestroy` | yes | `player`, `vehicle`, `vehicleEntityId`, `x/y/z`; cancelar conserva el bote o vagoneta golpeado |
-| `BlockSpread` | yes | `sourceX/Y/Z`, `x/y/z`, `id`, `meta` (the new block). Grass, mycelium or fire spreads to a neighbouring block |
-| `BlockFromTo` | yes | `sourceX/Y/Z` (the liquid), `x/y/z` (target), `liquidId` (8 water, 10 lava), `newMeta`; cancelled = the liquid does not flow there |
-| `LeavesDecay` | yes | `x/y/z`, `id`; leaves with no log nearby. Cancelled = they stay |
-| `BlockBurn` | yes | `x/y/z`, `id`; cancelled = the block does not burn |
-| `BlockForm` | yes | `x/y/z`, `id` (the new block: 49 obsidian or 4 cobblestone); lava meets water. Cancelled = the lava stays |
-| `ExplosionPrime` | yes | `x`, `y`, `z`, `fuse` (editable); TNT lit by a player, fire or redstone. Chain-reaction TNT does not fire it yet |
-| `EntityShootBow` | yes | `player`, `bow`, `force` (editable, 0–2); cancelled = no arrow and nothing spent |
-| `ProjectileLaunch` | yes | `type` (`ARROW`, `SNOWBALL`, `EGG`, `POTION`, `EXP_BOTTLE`, `FIREBALL`, `SMALL_FIREBALL`), `player` or `mob` (the shooter), `x/y/z`; cancelled = not launched, the item is not spent |
-| `PlayerAchievementAwarded` | yes | `player`, `achievement` (`mineWood`, `diamond`); cancelled = not recorded, no message |
-| `PlayerTextPreSend` | yes | `player`, `message` (editable); chat and command text only, not tips, popups or titles |
-| `PlayerLatencyUpdate` | no | `player`, `ping`, `previousPing`; the RakNet ping changed (checked once per second) |
-| `ThunderChange` | no | `thundering`, `weather`; a thunderstorm starts or stops (rain alone does not count) |
-| `ItemPickup` / `PlayerPickupItemEvent` | yes | `item`; alias de interfaz para impedir que se recojan objetos |
-| `ServerStart` | no | Fired after startup, once plugins are loaded and the world is ready, just before the network loop |
-| `ServerStop` | no | Fired at the start of shutdown, before plugins are disabled |
-| `WorldLoad` | no | `world`, `nether` (`true` for the Nether). Fired when each world finishes loading, after plugins load |
-| `WorldUnload` | no | `world`, `nether`. Fired at the start of shutdown, before the worlds are saved |
-| `ConnectionAttempt` | no | `address`. A new connection opens, before login |
-| `ConnectionClose` | no | `address`, `reason`. A connection closes, with or without a player (failed logins included) |
-| `TimeChange` | no | `from`, `to`. Fired when the time is set (commands, sleeping). The normal clock advance does not fire it |
-| `ChunkLoad` | no | `world`, `x`, `z` (chunk coordinates). A chunk enters memory |
-| `ChunkUnload` | no | `world`, `x`, `z` (chunk coordinates). A chunk leaves memory |
-| `ChunkPopulate` | no | `world`, `x`, `z` (chunk coordinates). A chunk finishes generating |
-| `LightningStrike` | no | `x`, `y`, `z`. Lightning strikes at a position |
-| `MobDespawn` | no | `mob`. A mob leaves the world (after death, distance cleanup or shutdown). Informational |
-| `MobMove` | no | `mob`, `fromX`, `fromZ`. A mob changes position on the x/z plane. Only created when a plugin listens, because it would fire every tick |
-| `MobTarget` | no | `mob`, `target` (a player, or `null`). A hostile mob's target changes |
-| `EntityTransform` | no | `mob`. Declared, not fired yet |
-| `EntityDamageByEntity` | no | `mob`, `damager`. A player hits a mob (only this case for now) |
-| `ArmorEquip` | no | `slot`, `item`. The player puts a piece of armor on from the inventory. Losing durability does not fire it |
-| `InventoryClick` | no | `window`, `slot`, `item`. A slot change sent by the client |
-| `FurnaceBurnFuel` | no | `x`, `y`, `z`, `fuel` (the item before it is used up). A furnace burns one unit of fuel. Informational |
-| `SmeltItem` | no | `x`, `y`, `z`, `source`, `result`. A furnace finishes smelting one item. Informational |
-| `PlayerEnchantItem` | no | `before`, `result` (items), `levelsSpent`. A player applies an enchantment at the enchanting table |
-| `ItemUse` | no | `item`. The player uses an item (right-click, placing a block) |
-| `PlayerFish` | yes | `fish`. The player catches a fish. Cancelled = nothing is given |
-| `PlayerJump` | no | Heuristic: the server reads no jump packet, so it fires when a player leaves the ground moving up |
-| `PlayerHungerChange` | no | `from`, `to`. Food changes from eating or from losing hunger |
-| `PlayerExperienceChange` | no | `before`, `after` (total XP). Fired when XP is gained or spent at the enchanting table |
-| `PlayerLevelChange` | no | `from`, `to`. The player's level changes |
-| `PlayerChangeDimension` | no | `from`, `to`. The player moves between the overworld and the Nether |
-| `VehicleDismount` | no | `vehicle` (`BOAT` or `MINECART`). The player gets off a boat or a minecart |
-| `BlockGrow` | no | `x`, `y`, `z`, `id`, `meta` (values before growing). Crops, stems and saplings grow |
-| `BlockUpdate` | no | `x`, `y`, `z`, `id`. A block is checked after a nearby change. Only created when a plugin listens |
-| `BlockRedstone` | no | `x`, `y`, `z`. The redstone power around a block changes |
-| `BlockFade` | no | `x`, `y`, `z`, `id`. Declared, not fired yet |
-| `BlockDropItem` | yes | `player` (`null` for falling blocks and explosions), `x`, `y`, `z`, `id`, `drops` (editable list). The block is about to drop its items. Cancelled = nothing drops |
-
-</details>
-
-Some events are only built when a plugin listens to them, because building them costs time (for example `MobMove` and `BlockUpdate`, which happen very often). This does not change what a listener gets: a plugin that listens to a base class or to an interface still receives them. `BlockFade` and `EntityTransform` are declared but not fired yet, so listeners for them never run.
-
-Example using the new events:
-
-```java
-on(Events.PlayerAttack.class, e -> {
-    if (e.targetPlayer != null && !e.player.isOp()) e.setCancelled(true); // block PvP attacks unless attacker is OP
-    if (e.targetMob != null) e.damage = Math.min(e.damage, 4.0);           // cap damage to mobs
-});
-on(Events.VehicleMount.class, e -> { if (!e.player.isOp()) e.setCancelled(true); });
-on(Events.VehicleDestroy.class, e -> { if (e.vehicle.equals("BOAT")) e.setCancelled(true); });
-```
-
-#### Event interfaces
-
-Every event also implements an interface with a standard name (in the `net.BlockNes.event` packages). You can listen to the interface instead of the class:
-
-```java
-on(PlayerChatEvent.class, e -> e.setMessage(e.getMessage().replace("badword", "****")));
-
-@EventHandler(priority = Priority.HIGH, ignoreCancelled = true)
-public void onChat(PlayerChatEvent e) { e.setMessage(e.getMessage().replace("badword", "****")); }
-```
-
-`EntityEvent.getEntity()` returns the `Player` or the `Mob`, so check it with `instanceof`. `getDamager()` returns `null` when no entity caused the damage. The category interfaces `PlayerEvent`, `EntityEvent` and `PluginEvent` cover all the events of their kind.
-
-<details>
-<summary>All event interfaces</summary>
-
-| Package | Interfaces |
+| Path | What it is |
 | --- | --- |
-| `net.BlockNes.event.player` | `PlayerEvent` (category), `PlayerAttackEvent`, `PlayerPickupItemEvent`, `PlayerJoinEvent`, `PlayerQuitEvent`, `PlayerChatEvent`, `PlayerCommandPreprocessEvent`, `PlayerMoveEvent`, `PlayerInteractEvent`, `PlayerDeathEvent`, `PlayerRespawnEvent`, `PlayerGameModeChangeEvent`, `PlayerKickEvent`, `PlayerPreLoginEvent`, `PlayerDropItemEvent`, `PlayerItemConsumeEvent`, `PlayerBedEnterEvent`, `PlayerBedLeaveEvent`, `PlayerToggleSneakEvent`, `PlayerToggleSprintEvent`, `PlayerExhaustEvent`, `PlayerAnimationEvent`, `PlayerItemHeldEvent`, `ItemUseEvent`, `PlayerAchievementAwardedEvent`, `PlayerAuthenticateEvent`, `PlayerChangeDimensionEvent`, `PlayerExperienceChangeEvent`, `PlayerFishEvent`, `PlayerHandshakeEvent`, `PlayerHungerChangeEvent`, `PlayerJumpEvent`, `PlayerLatencyUpdateEvent`, `PlayerLevelChangeEvent`, `PlayerTeleportEvent`, `PlayerTextPreSendEvent` |
-| `net.BlockNes.event.block` | `BlockBreakEvent`, `BlockPlaceEvent`, `SignChangeEvent`, `BlockBurnEvent`, `BlockDropItemEvent`, `BlockFadeEvent` (declared, not fired yet), `BlockFormEvent`, `BlockFromToEvent`, `BlockGrowEvent`, `BlockInteractEvent`, `BlockRedstoneEvent`, `BlockSpreadEvent`, `BlockUpdateEvent`, `LeavesDecayEvent` |
-| `net.BlockNes.event.entity` | `VehicleMountEvent`, `VehicleDestroyEvent`, `EntityEvent` (category), `EntityDamageEvent`, `EntityDeathEvent`, `EntitySpawnEvent`, `EntityRegainHealthEvent`, `EntityTeleportEvent`, `EntityDamageByEntityEvent`, `EntityDespawnEvent`, `EntityExplodeEvent`, `EntityMoveEvent`, `EntityShootBowEvent`, `EntityTargetEvent`, `EntityTransformEvent` (declared, not fired yet), `ExplosionPrimeEvent`, `ProjectileLaunchEvent`, `VehicleDismountEvent` |
-| `net.BlockNes.event.inventory` | `InventoryOpenEvent`, `InventoryCloseEvent`, `CraftItemEvent`, `ArmorEquipEvent`, `FurnaceBurnFuelEvent`, `InventoryClickEvent`, `InventoryTransactionEvent`, `PlayerEnchantItemEvent`, `SmeltItemEvent` |
-| `net.BlockNes.event.server` | `ServerCommandEvent`, `DataPacketReceiveEvent`, `DataPacketSendEvent`, `ConnectionAttemptEvent`, `ConnectionCloseEvent`, `PacketDecodeEvent`, `PacketEncodeEvent`, `ServerStartEvent`, `ServerStopEvent` |
-| `net.BlockNes.event.level` | `LevelSaveEvent`, `ChunkLoadEvent`, `ChunkPopulateEvent`, `ChunkUnloadEvent`, `LightningStrikeEvent`, `ThunderChangeEvent`, `TimeChangeEvent`, `WeatherChangeEvent`, `WorldLoadEvent`, `WorldUnloadEvent` |
-| `net.BlockNes.event.plugin` | `PluginEvent` (category), `PluginEnableEvent`, `PluginDisableEvent` |
-| `net.BlockNes.event` | `Cancellable`, `Listener` |
+| `plugins/*.jar` | The plugins |
+| `plugins/<Name>/` | The plugin's data folder (`config.properties`, JSON files, `players/`...). Created when the plugin asks for it |
+| `plugins/permissions.properties` | Optional file that grants permissions to players and groups (see [Permissions](#permissions)) |
+| `server-plugin-api.jar` | Compile-only jar that you build against. **Never put it in `plugins/`** |
 
-</details>
+---
 
-#### `@EventHandler` listeners
+## Quick start: your first plugin
 
-Instead of one `on(...)` per event you can group handlers in a class and register them all at once:
+Create this folder structure:
 
-```java
-public class MyListener {
-    @EventHandler(priority = Priority.HIGH, ignoreCancelled = true)
-    public void onBreak(Events.BlockBreak e) { e.setCancelled(true); }
-
-    @EventHandler
-    public void onJoin(Events.PlayerJoin e) { /* ... */ }
-}
-// in onEnable():
-registerEvents(new MyListener());   // returns how many handlers were registered
 ```
-
-Each handler method takes exactly one parameter (an `Event`). Methods that don't are skipped with a warning.
-
-`unregisterEvents(listener)` removes the handlers of that object and returns how many were removed; `unregisterAllEvents()` removes every handler this plugin registered.
-
-You can listen to a base class (`Events.PlayerEvent` or `Event`) to receive every event of that kind, and fire your own events with `fire(new MyEvent())` (any subclass of `Event`).
-
-### Commands and permissions
-
-```java
-// opOnly = true: only OPs and the console
-command("hello", "greets you", "", false, (sender, args) -> sender.send("Hello " + sender.name()));
-
-// protected by a permission node (OPs always pass)
-command("announce", "message to all", "<text ...>", "hello.announce", (s, a) -> broadcast(String.join(" ", a)));
-```
-
-`sender` has `name()`, `isOp()` and `send(String)`. Check a node manually with `hasPermission(sender, "node")`.
-
-Aliases: `alias("hello", "hi", "hey")` makes `/hi` and `/hey` run the same command (`/help` lists it once).
-Run commands from code: `dispatchCommand(sender, "give Steve 1 1")`; `console()` returns an OP sender that writes to the log.
-
-`plugins/permissions.properties`:
-
-```properties
-# player=groups and/or permissions
-Steve=vip,hello.use
-# group.<name>=permissions; "-x" denies; "@group" includes another group
-group.vip=pos.others,-tnt.place,@default
-# the "default" group applies to everybody
-group.default=hello.use
-```
-
-Wildcards: `*` and `a.*`. OPs have every permission.
-
-#### Command classes
-
-For a command with its own state, extend `Command`. It handles the usage line, the aliases and the permission:
-
-```java
-import net.BlockNes.command.CommandSender;
-import net.BlockNes.plugin.Command;
-
-// in onEnable():
-registerCommand(new Command("greet", "greets someone", "<name>", "hi") {
-    @Override public boolean execute(CommandSender sender, String label, String[] args) {
-        if (args.length == 0) return false;          // false = show the usage line
-        sender.send("Hello " + args[0]);
-        return true;
-    }
-});
-```
-
-`setPermission("hello.use")` (`""` = everyone, `"op"` = operators only), `setPermissionMessage(...)`, `setDescription(...)`, `setUsage(...)` and `setAliases(...)` change the command after it is created. `getCommand("greet")` returns it and `unregisterCommand("greet")` removes it.
-
-#### Declared commands and permissions
-
-Commands, aliases and permissions can also be declared in `plugin.properties`. Declared descriptions, usages and permissions are used for whatever the code leaves empty, and declared aliases are added to the ones the code gives:
-
-```properties
-commands.greet.description=greets someone
-commands.greet.usage=<name>
-commands.greet.aliases=hi,hey
-commands.greet.permission=hello.use
-commands.greet.permission-message=You cannot use that
-permissions.hello.use.description=use /greet
-permissions.hello.use.default=true
-permissions.vip.default=op
-permissions.vip.children=hello.use,-hello.admin
-```
-
-- `permissions.<node>.default`: `op` (only operators, the default), `notop` (everyone except operators), `true` (everyone) or `false` (nobody).
-- `children` apply to whoever has the parent permission. Above, anyone with `vip` gets `hello.use` and is denied `hello.admin` (`-` denies).
-
-The same thing in code:
-
-```java
-registerPermission("hello.use", "use /greet", PermissionDefault.TRUE);
-registerPermission("vip", "VIP perks", PermissionDefault.OP)
-    .addChild("hello.use", true)
-    .addChild("hello.admin", false);
-```
-
-#### Who has which permission
-
-Players who are not operators get a permission from the first of these that says something about it:
-
-1. attachments made with `addAttachment` (the last matching one wins);
-2. `plugins/permissions.properties` (the player's own line and their groups);
-3. the children of parent permissions the player has;
-4. the default of the registered permission. Unregistered nodes are denied.
-
-Operators and the console have every permission. `hasPermission(player, "node")` checks all of the above.
-
-```java
-PermissionAttachment a = addAttachment(player);     // or addAttachment(player, "hello.admin", true)
-a.setPermission("hello.admin", true).setPermission("hello.use", false);
-a.unsetPermission("hello.admin");                   // back to the lower levels
-removeAttachment(a);                                // or a.remove()
-```
-
-Attachments are removed when the player leaves and when the plugin is disabled or reloaded.
-
-### Tasks
-
-```java
-Task t = runLater(100, () -> broadcast("5 seconds later"));          // 20 ticks = 1 second
-runRepeating(0, 6000, () -> broadcast("Every 5 minutes"));
-t.cancel();
-
-runAsync(() -> { /* HTTP, files... never touch players or worlds here */ });
-runAsync(() -> fetchSomething(), result -> message(player, result)); // result arrives on the server thread
-
-runAsync(() -> { String data = download(); runSync(() -> broadcast(data)); }); // runSync: back to the server thread from ANY thread
-cancelTasks();                                   // cancels every task of this plugin
-t.id(); t.isRepeating(); t.owner();              // Task info
-```
-
-#### AsyncTask
-
-For work that must not block the server, extend `AsyncTask`. `onRun()` runs on another thread (never touch players or worlds there), then `onCompletion()` runs on the server thread:
-
-```java
-int id = runAsync(new AsyncTask() {
-    @Override public void onRun() {
-        setResult(download("https://example.com/data.txt"));   // your own code, off the server thread
-    }
-    @Override public void onCompletion() {
-        broadcast("Got: " + getResult());                       // back on the server thread
-    }
-});
-isTaskQueued(id);    // still pending?
-cancelTask(id);      // see the rules below
-```
-
-- A cancelled task never runs `onCompletion()`. If it is cancelled before it starts, `onRun()` does not run either.
-- If `onRun()` throws, the error is logged, `isCrashed()` becomes `true` and `onCompletion()` still runs.
-- `cancelTask(id)` and `isTaskQueued(id)` work for both kinds of task; `getTask(id)` returns a scheduled `Task`. Pending tasks of a plugin are cancelled when it is disabled.
-
-### Config
-
-`config()` returns `plugins/<Name>/config.properties` (a `java.util.Properties` subclass):
-
-```java
-Config cfg = config();
-String s = cfg.getString("welcome", "Hi");
-int n = cfg.getInt("limit", 10);                // also getLong, getDouble, getBoolean
-cfg.set("limit", 20).save();
-reloadConfig();                                  // re-read from disk
-Path file = saveResource("data.txt");           // copy a resource from the jar if missing
-Path folder = dataFolder();                     // plugins/<Name>/
-
-cfg.setDefault("limit", 10).save();             // only writes the key if it doesn't exist yet
-cfg.has("limit");
-cfg.setList("worlds", List.of("a", "b"));       // stored as "a,b"
-List<String> w = cfg.getStringList("worlds");   // [a, b]
-List<String> kits = cfg.keys("kits.");          // kits.vip, kits.basic ... (sorted)
-```
-
-`Config` also has `remove(key)`, `getAll()` and `getKeys()`. `saveDefaultConfig()` copies the jar's `config.properties` if none exists, `getConfig()` is the same as `config()`, and `getResource("name")` opens a file from the plugin's own jar (close it when you are done).
-
-For structured data, `jsonConfig("data.json")` gives a `JsonConfig` stored in the plugin folder, addressed with dotted paths:
-
-```java
-JsonConfig json = jsonConfig("data.json");
-json.set("homes.steve.x", 10).set("homes.steve.z", -4).save();   // creates the nested objects
-int x = json.getInt("homes.steve.x", 0);                          // also getString, getLong, getDouble, getBoolean, getList
-json.setDefault("maxHomes", 3).save();                            // only if the key is missing
-json.remove("homes.steve");
-json.reload();                                                    // read the file from disk again
-```
-
-### HUD: titles, action bar, boss bars and scoreboard
-
-MCPE 0.15.10 has no title, boss bar or scoreboard packets, so the API emulates them on the two text channels the client does have:
-**tip** (scoreboard and titles) and **popup** (above the hotbar). It redraws every 10 ticks, only resends when something changed, and removes everything a plugin registered when that plugin is disabled.
-
-```java
-// scoreboard: one line per key, sorted by order; a global line is evaluated for every player
-hudLine("hp", 1, p -> "\u00a7cHP: " + p.health);
-hudLine(player, "money", 2, "\u00a76$" + balance);       // per-player line; text = null removes it
-hudLine(player, "combat", 3, "\u00a7cIn combat", 200);   // NEW: disappears by itself after 200 ticks
-hudRemove("hp");  hudRemove(player, "money");  hudClear(player);
-List<String> shown = hudLines(player);                    // NEW: scoreboard lines the player sees now (no padding)
-
-title(player, "\u00a7aWelcome", "\u00a77enjoy", 60);      // center, 60 ticks (covers the scoreboard while it lasts)
-actionBar(player, "\u00a7eSaved!", 40);                   // above the hotbar (covers boss bars while it lasts)
-bossBar(player, "dragon", "\u00a7cEnder Dragon", 0.65);   // text + 24-segment progress bar; same key = update
-removeBossBar(player, "dragon");
-broadcastTitle("\u00a76Round 2", "fight!", 40);            // NEW: to everybody
-broadcastActionBar("\u00a7eServer restarts in 5 min", 100);
-clearTitle(player);                                       // NEW: remove the active title and action bar
-
-String[] onScreen = hudView(player);                      // {popup, tip} currently shown (logical text, no padding)
-```
-
-`Events.PlayerHud` fires per player on every redraw (only if someone listens): edit `lines` (the scoreboard) or set `popup`, so several plugins can add to the same HUD without knowing each other.
-
-#### Scoreboard position (it no longer sits in the middle of the screen)
-
-The client centers every line of the tip channel, so the scoreboard used to be in the middle of the screen. Now each line is padded with spaces (4 px each) so the whole block sits at the **right** edge by default; all lines start at the same x.
-The width of each line is computed with the default Minecraft font widths (color codes ignored, bold counts +1 px per letter).
-
-The server settings (`hud-position`, `hud-screen-width`, `hud-offset-y`, `hud-max-lines`) are in [README.md](README.md#configuration). Every player can tune the scoreboard live with `/hud` (no OP needed), because GUI size differs per device; the command is in [README.md](README.md#commands).
-
-For plugins: `hudPosition(p, HudPosition.LEFT)`, `hudVisible(p, false)`, `hudScreenWidth(p, 640)`, `hudOffsetY(p, 2)` (and the matching getters). Titles are always centered. These per-player settings are not saved to disk (they reset when the player leaves).
-
-It is still an emulation: the tests check the text the server sends (including the padding math), **not how a real 0.15.10 client draws it**. Padding is based on assumed font widths and screen size, so check it on a real client and adjust `hud-screen-width` / `/hud y` once. The `left` position relies on trailing spaces being kept by the client (they are followed by `\u00a7r` just in case); `right` only uses leading spaces. The boss bar is text, not the real bar.
-
-### API 1.4 additions (inside `Plugin`)
-
-`api=1.4` in `plugin.properties` is only needed if you use these. Everything is additive: plugins compiled against 1.3 keep working.
-
-| Method | Description |
-| --- | --- |
-| `color("&aHi &lthere")` / `stripColor(s)` | `&` codes to `\u00a7` codes / remove them (also `Text.color`, `Text.strip`) |
-| `messagef(p, "&aYou have %d coins", n)` / `broadcastf(...)` | `String.format` + colors, to one player / everybody |
-| `runRepeating(delay, period, task -> ...)` | Like `runRepeating` but the body receives its `Task` so it can `task.cancel()` itself |
-| `runTimes(delay, period, times, i -> ...)` | Runs `times` times (index 0..times-1) and cancels itself |
-| `countdown(5, s -> broadcast("Starting in " + s), () -> start())` | One call per second with the remaining seconds, then `done` |
-| `once(Events.X.class, e -> ...)` | Listen to an event only once (also with a `Priority`) |
-| `onlineCount()` / `playerNames()` / `isOnline(name)` | Quick player queries |
-| `playersNear(dim, x, y, z, r)` / `nearestPlayer(dim, x, y, z, max)` / `mobsNear(dim, x, y, z, r)` | Entities in a radius, nearest first |
-| `teleportChecked(p, x, y, z)` | Teleport through `Events.PlayerTeleport` (returns false if another plugin cancelled it) |
-| `setWeather(type, ticks)` | `Weather.SUNNY / RAINY / RAINY_THUNDER / THUNDER`; goes through `Events.WeatherChange` |
-| `strikeLightning(x, y, z)` / `giveXp(p, n)` / `setTimeStopped(b)` | Small server helpers |
-| `kickAll(reason, exceptPermission)` | Kick everyone except players with that permission |
-| `hudLine(p, key, order, text, ttlTicks)`, `hudLines`, `hudPosition`, `hudVisible`, `hudScreenWidth`, `hudOffsetY`, `broadcastTitle`, `broadcastActionBar`, `clearTitle` | See the HUD section |
-
-New events: `Events.PlayerTeleport` (cancelable, `toX/toY/toZ` editable; fired by `/tp` and `teleportChecked`, not by the server's internal teleports) and `Events.WeatherChange` (cancelable, `type`/`ticks` editable; fired by `/weather` and `setWeather`, not by random weather). `EntityExplodeEvent`, `PlayerTeleportEvent` and `WeatherChangeEvent` are the PocketMine names for `Explosion`, `PlayerTeleport` and `WeatherChange`. Also new in this patch: the table rows above for `BlockSpread`, `BlockFromTo`, `LeavesDecay`, `BlockBurn`, `BlockForm`, `ExplosionPrime`, `EntityShootBow`, `ProjectileLaunch`, `PlayerAchievementAwarded`, `PlayerTextPreSend`, `PlayerLatencyUpdate` and `ThunderChange`.
-
-New helper classes: `Text` (`color`, `strip`, `width`, `bar(progress, length, "&a", "&8")`, `ticks`, `seconds`, `number`, `truncate`) and `Cooldowns` (`tryUse(key, ms)`, `remainingSeconds(key)`, `reset`).
-
-### API 1.5 additions (inside `Plugin`)
-
-`api=1.5` in `plugin.properties` is only needed if you use these. Everything is additive, so plugins compiled against 1.4 keep working. `plugins-ejemplo/Tienda` uses most of them.
-
-#### Menus with buttons
-
-A menu is a chest window with 3 or 6 rows (27 or 54 slots). Each slot holds an item and, optionally, a click handler. Items in a menu are buttons: when a player tries to take or move an item, the change is reverted and the handler runs.
-
-```java
-Menu shop = menu(3);                                          // 3 rows (27 slots); menu(6) gives 54
-shop.border(new Item(160, 7, 1));                             // glass around the edge
-shop.setItem(11, new Item(297, 0, 1).withName(color("&ePan")), e -> {
-    give(e.player, new Item(297, 0, 1));                      // the event has player, menu, slot, item and proposed
-});
-shop.setItem(15, new Item(35, 14, 1).withName(color("&cClose")), e -> closeMenu(e.player));
-shop.onClose(p -> message(p, "Thanks for visiting"));
-openMenu(player, shop);
-```
-
-- Every change a client makes to a menu slot is reverted, so an item never ends up in the wrong place. A slot without a handler just reverts.
-- `Events.MenuClick` can be cancelled. Cancelling it skips the slot's handler; the change is still reverted.
-- While a menu is open the player's inventory is frozen: the client cannot move, drop or craft items. That is what makes it impossible to lose or duplicate an item through a menu. Closing the menu unfreezes it.
-- `onClose` runs when the player closes the menu, when `closeMenu` is called, when the player disconnects, and when the plugin that created the menu is disabled.
-- Opening a menu (or a chest) closes the window the player had open before.
-- `setItem` and the other changes update the screen of every player who has the menu open. Call them from the server thread.
-- The client shows no title for these menus.
-- To show the window, the client needs a chest where the server says it is. So while a menu is open, that player alone sees a chest two blocks above their head; it is removed when the menu closes. The world on the server is not changed.
-
-| Method | Description |
-| --- | --- |
-| `menu(rows)` | New menu with 3 or 6 rows (other values throw `IllegalArgumentException`) |
-| `openMenu(p, menu)` / `closeMenu(p)` / `isMenuOpen(p)` | Open it for a connected player / close it (runs `onClose`) / check |
-| `setItem(slot, item)` / `setItem(slot, item, handler)` | Put an item (air empties the slot), with an optional click handler |
-| `getItem(slot)` / `rows()` / `size()` / `owner()` | Read the menu |
-| `fill(item)` / `border(item)` / `clear()` | Bulk changes; the slots they change lose their handlers |
-| `onClose(handler)` / `viewers()` / `refresh()` | Close callback, players who have it open, resend the whole content |
-
-#### Items with a name and lore
-
-```java
-Item sword = new Item(276, 0, 1).withName(color("&bSword of the cave"))
-        .withLore(Arrays.asList(color("&7Found deep underground"), color("&7Sharp")));
-sword.name();   // the name with its § codes, or null when the item has no name
-sword.lore();   // the lines, or an empty list
-```
-
-Names and lore are saved with the item and sent to the client as NBT (`display`). Limits: 128 characters per name or line, and 16 lore lines. They are part of the item's identity: items with different names do not stack, and the duplicate protection counts them as different items.
-
-#### Recipes
-
-```java
-Map<Character, Item> ing = new HashMap<>();
-ing.put('T', new Item(5, 0, 1));                                       // planks
-ing.put('P', new Item(280, 0, 1));                                     // stick
-addShapedRecipe(new Item(278, 0, 1).withName(color("&bShop pickaxe")), new String[]{"TTT", " P ", " P "}, ing);
-addShapelessRecipe(new Item(1, 0, 4), Arrays.asList(new Item(3, 0, 2), new Item(4, 0, 2)));
-```
-
-- Shaped rows have up to 3 characters, and `' '` is an empty cell. Empty borders are trimmed, so `{"AA ", "A  "}` is a 2x2 recipe. Every character must be in the ingredients map.
-- Shapeless recipes use up to 9 units in total.
-- An ingredient with damage `-1` matches any damage value, for example every kind of log.
-- Recipes added by a plugin are removed when it is disabled. `removeRecipe(recipe)` removes any recipe, built-in ones included (`server().recipes.all` lists them). When a built-in recipe and a plugin recipe give the same result, the built-in one is tried first.
-- Furnace recipes are not part of this API yet.
-- Each recipe added while players are online sends the whole recipe list to each of them again. When you add many, do it in `onEnable`, before players join.
-
-#### Regions
-
-```java
-Region r = region(0, 10, 60, 10, 12, 62, 12);   // corners in any order, inclusive; dimension 0 = overworld, 1 = nether
-r.fill(1, 0);                                   // stone; returns how many blocks were written
-r.replace(1, 4, 0);                             // stone -> cobblestone; returns how many were replaced
-int cobble = r.count(4);
-Region.Snapshot copy = r.copy();                // ids and metas kept in memory
-region(0, 40, 60, 10, 42, 62, 12).paste(copy, 40, 60, 10, true);   // true = skip air: keep what is there where the copy is air
-```
-
-Creating a region has no size limit. `copy()` refuses regions of more than 1,000,000 blocks with `IllegalArgumentException`, because the copy is kept in memory. Blocks outside the world height are skipped. Other methods: `contains(x, y, z)`, `volume()`, `width()`, `height()`, `depth()`, and `minX()` to `maxZ()`. Snapshots have `width()`, `height()`, `depth()`, `idAt(dx, dy, dz)` and `metaAt(dx, dy, dz)`.
-
-#### Per-player data
-
-```java
-JsonConfig stats = playerData().of(player);     // or of("Steve")
-stats.set("kills", stats.getInt("kills", 0) + 1);
-```
-
-Each player gets a JSON file at `plugins/<Name>/players/<name>.json`, with the same methods as `jsonConfig` (dotted paths, `getInt`, `setDefault`, ...). Names are lowercased, so "Steve" and "steve" share one file. The data is saved when the player disconnects and when the plugin is disabled. `saveAll()` saves now, `exists(name)` checks for the file, and `unload(name)` saves the player's data and drops it from memory.
-
-#### Argument helpers
-
-`net.BlockNes.plugin.Args` reads command arguments. A missing or invalid value returns the default, so a bad number never breaks a command:
-
-| Method | Description |
-| --- | --- |
-| `Args.getInt(args, i, def)` / `Args.getInt(args, i, def, min, max)` | Integer; with a range, values outside it return `def` |
-| `Args.getDouble(args, i, def)` / `Args.getBoolean(args, i, def)` | Finite decimal / `true`, `on`, `si`, `yes`, `1` and `false`, `off`, `no`, `0` |
-| `Args.get(args, i, def)` / `Args.has(args, i)` / `Args.join(args, from)` | Text / whether it exists / the words from a position, joined with spaces |
-
-### API 1.6 additions (inside `Plugin`)
-
-`api=1.6` in `plugin.properties` is only needed if you use these. Everything is additive: plugins compiled against 1.5 keep working.
-
-#### Base class and state
-
-- `extends PluginBase` works the same as `extends Plugin`.
-- `setEnabled(true)` / `setEnabled(false)` enable or disable the plugin. Enabling a disabled plugin reads its jar again, so the old object stops working.
-- `isEnabled()` is `true` only after `onEnable()` has finished. Tasks and listeners can still be registered inside `onEnable()`.
-
-#### Server facade
-
-Get it with `getServer()` (or `Server.getInstance()` from anywhere):
-
-| Method | Description |
-| --- | --- |
-| `getName()` / `getVersion()` / `getMinecraftVersion()` / `getApiVersion()` | `BlockNes`, `1.7.0 beta`, `0.15.10`, `1.6` |
-| `getPort()` / `getIp()` / `getMaxPlayers()` / `getMotd()` | Server settings |
-| `getOnlinePlayers()` / `getPlayer(name)` / `getPlayerExact(name)` | `getPlayer` also accepts the start of a name |
-| `getLevelByName(name)` / `getDefaultLevel()` / `getLevels()` | Worlds as `Level` objects (`world`, `nether`) |
-| `getPluginManager()` / `getScheduler()` / `getCommandMap()` / `getLogger()` | Managers and logger |
-| `getDataPath()` / `getPluginPath()` | Server and plugin folders, with a trailing separator |
-| `isOp(name)` / `getWhitelisted()` / `isWhitelisted(name)` / `getNameBans()` / `getIPBans()` | Access lists |
-| `broadcastMessage(msg, recipients)` | Message to a list of players |
-| `dispatchCommand(sender, line)` | Run a command line as `sender`; returns `true` (it does not report whether the command exists) |
-| `getConsoleSender()` / `shutdown()` | Console sender / stop the server |
-
-#### Scheduler
-
-Get it with `getScheduler()`. Delays and periods are in ticks (20 ticks = 1 second).
-
-| Method | Description |
-| --- | --- |
-| `scheduleTask(task)` | Run on the next tick |
-| `scheduleDelayedTask(task, delay)` / `scheduleRepeatingTask(task, period)` / `scheduleDelayedRepeatingTask(task, delay, period)` | Run later / repeat / both. Each returns a `TaskHandler` |
-| `scheduleAsyncTask(asyncTask)` | Run `onRun()` on another thread; returns the task id |
-| `cancelTask(id)` / `cancelTasks(plugin)` / `cancelAllTasks()` / `isQueued(id)` | Cancel and check |
-
-```java
-getServer().getScheduler().scheduleRepeatingTask(new Task() {
-    @Override public void onRun(long currentTick) { broadcast("Every 5 minutes"); }
-}, 6000);
-```
-
-- `Task`: implement `onRun(long currentTick)`. `onCancel()` runs when the task is cancelled.
-- `PluginTask(plugin)`: a task that belongs to a plugin. It is cancelled automatically when the plugin is disabled, and `getOwner()` returns the plugin.
-- `AsyncTask`: `onRun()` runs on another thread (never touch players or worlds there); `onCompletion(Server)` runs on the server thread. Use `setResult(...)` and `getResult()` to pass data between them.
-
-#### Commands
-
-| Method | Description |
-| --- | --- |
-| `command(name, description, usage, permission, (sender, command, label, args) -> ...)` | Command with a `CommandExecutor`. Return `false` to show the usage line |
-| `getCommandMap()` → `getCommand(name)` / `getCommands()` / `register(prefix, command)` / `unregister(name)` / `dispatch(sender, line)` | Find, add and remove commands |
-| `ConsoleCommandSender` | The console as a command sender |
-
-```java
-command("gift", "gives 16 stone", "", "", (sender, command, label, args) -> {
-    Player p = getServer().getPlayerExact(sender.getName());
-    if (p == null) { sender.sendMessage("Players only"); return true; }
-    p.getPlayerInventory().addItem(Item.get(1, 0, 16));
-    return true;
-});
-```
-
-#### Events
-
-| Method | Description |
-| --- | --- |
-| `getPluginManager().registerEvents(listener, plugin)` | Register every `@EventHandler` method of a `net.BlockNes.event.Listener` |
-| `getPluginManager().unregisterEvents(listener, plugin)` | Remove them |
-| `getPluginManager().callEvent(event)` | Send an event to the listeners (same as `fire`) |
-
-#### Worlds, positions and vectors
-
-Get a world with `getServer().getLevelByName("world")`, `getDefaultLevel()` or `player.getLevel()`.
-
-| Method | Description |
-| --- | --- |
-| `getName()` / `getDimension()` | Folder name and dimension (0 overworld, 1 nether) |
-| `getBlockIdAt(x, y, z)` / `getBlockDataAt(x, y, z)` | Read a block id and its data |
-| `setBlockIdAt(x, y, z, id)` / `setBlockDataAt(x, y, z, meta)` / `setBlockAt(x, y, z, id, meta)` | Change blocks (clients are updated) |
-| `getHighestBlockAt(x, z)` / `getSpawnLocation()` | Column height and world spawn |
-| `getTime()` / `setTime(t)` / `stopTime()` / `startTime()` | World time |
-| `setWeather(type, ticks)` | Weather in the overworld |
-| `getPlayers()` / `getMobs()` | Players and mobs in that world |
-| `dropItem(vector, item)` / `explode(vector, size)` / `addLevelEvent(vector, eventId, data)` / `save()` | Items, explosions, sounds and particles, saving |
-
-Time and weather are global to the server, not per world. A block is an id and its data; there is no `Block` object yet.
-
-`Position` is a `Vector3` with a world (`getLevel()`). `Vector3` is immutable: `add`, `subtract`, `multiply`, `divide`, `distance`, `distanceSquared`, `length`, `normalize`, `floor`, `ceil` and `dot` return new vectors.
-
-#### Players
-
-| Method | Description |
-| --- | --- |
-| `getLevel()` / `getPosition()` | World and position |
-| `getIp()` | IP address without the port (`getAddress()` still returns the `InetSocketAddress`) |
-| `getFood()` / `getXpLevel()` / `getXpProgress()` | Food level and experience |
-| `hasPermission(node)` | Permission check (OPs have everything) |
-| `getPlayerInventory()` | Inventory that updates the client: `addItem`, `removeItem`, `setItem`, `getItem`, `contains`, `getContents`, `clear`. `getInventory()` is the raw inventory and does not update the client |
-| `sendTitle(title, subtitle)` / `addTitle(title, subtitle, fadeIn, stay, fadeOut)` | Title in the middle of the screen. The times are in ticks, and the title is shown for their sum (no animation) |
-| `setMetadata(key, value)` / `getMetadata(key)` / `hasMetadata(key)` / `removeMetadata(key, plugin)` | Plugin data stored on the player (see below) |
-
-#### Metadata
-
-Metadata is stored per plugin on players and levels, and it is removed when the plugin is disabled:
-
-```java
-p.setMetadata("vip", new FixedMetadataValue(this, true));
-boolean vip = p.hasMetadata("vip") && p.getMetadata("vip").get(0).asBoolean();
-p.removeMetadata("vip", this);
-```
-
-`MetadataValue` has `value()`, `asInt()`, `asLong()`, `asDouble()`, `asString()` and `asBoolean()`. `FixedMetadataValue(plugin, value)` keeps a fixed value. Metadata on blocks is not available yet.
-
-#### Items and text
-
-| Method | Description |
-| --- | --- |
-| `Item.get(id)` / `Item.get(id, damage)` / `Item.get(id, damage, count)` | Create an item |
-| `getId()` / `getDamage()` / `getCount()` / `getMaxStackSize()` / `isNull()` | Item data |
-| `getCustomName()` / `getLore()` / `getEnchantments()` / `hasEnchantment(id)` | Name, description and enchantments |
-
-`Item` is immutable, so change it with `withName(...)`, `withCount(...)` and the other `with` methods. `TextFormat` has the color and style codes (`TextFormat.RED`, `TextFormat.GREEN`, `TextFormat.BOLD`, `TextFormat.RESET`...), and `TextFormat.clean(text)` removes them.
-
-### Server and world helpers (inside `Plugin`)
-
-| Method | Description |
-| --- | --- |
-| `server()` | The `Server` instance (`server().isOp(player)` etc.) |
-| `players()` / `player(name)` | Connected players / find one by name |
-| `broadcast(msg)` / `message(player, msg)` | Chat messages |
-| `popup(player, msg)` / `tip(player, msg)` | Text above the hotbar / small text at screen center |
-| `world(dim)` | World by dimension (`0` overworld, `1` nether) |
-| `getBlock(dim, x, y, z)` / `setBlock(dim, x, y, z, id, meta)` | Read / place blocks (clients are updated) |
-| `spawnMob(dim, netId, x, y, z)` | Spawn a mob (`Mob.ZOMBIE`, `Mob.COW`, ...); `null` if unknown |
-| `registerService(Type.class, impl)` / `service(Type.class)` | Share an API between plugins |
-| `plugin(name)` / `isEnabled()` | Get another loaded plugin / is this plugin still active |
-| `kick(p, reason)` / `teleport(p, x, y, z)` | Kick (goes through `PlayerKick`) / move a player |
-| `heal(p, n)` / `damage(p, n, cause)` / `kill(p)` | Health (go through `PlayerHeal` / `PlayerDamage`) |
-| `setGamemode(p, gm)` / `give(p, item)` | Game mode (`PlayerGamemode`) / give an item (returns what didn't fit) |
-| `isOp(p)` / `setOp(name, bool)` | OP list |
-| `time()` / `setTime(t)` / `saveAll()` / `maxPlayers()` | World time, save to disk, slot count |
-| `getLogger()` | `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency`, `debug` (only with `-Dblocknes.debug=true`) and `logException(t)`; lines start with `[prefix]` |
-| `log(msg)` / `logWarn(msg)` | Console output prefixed with your plugin name |
-| `playerExact(name)` / `playersIn(dim)` | Exact-name lookup / players in one dimension |
-| `broadcast(msg, permission)` / `broadcastTip(msg)` / `broadcastPopup(msg)` | Chat message only to players with the permission / tip or popup to everyone |
-| `hasPermission(player, node)` | Permission check (see *Who has which permission*) |
-| `banPlayer(name)` / `pardonPlayer(name)` / `isBanned(name)` | Ban (kicks the player) / pardon / check a name (`banned-players.txt`) |
-| `banIp(ip)` / `pardonIp(ip)` / `isBannedIp(ip)` | Ban (kicks players from that IP) / pardon / check an IP (`banned-ips.txt`) |
-| `whitelistAdd(name)` / `whitelistRemove(name)` / `isWhitelisted(name)` | Edit / check the white list (`white-list.txt`) |
-| `setWhitelist(on)` / `isWhitelistOn()` | Turn the white list on or off / check it |
-| `isPvpEnabled()` / `isSpawnMobsEnabled()` | The `pvp` and `spawn-mobs` settings from `server.properties` |
-| `mobsIn(dim)` / `highestBlockAt(dim, x, z)` | Mobs in a dimension / top block at x, z |
-| `dropItem(dim, x, y, z, item)` / `explode(dim, x, y, z, size)` / `playLevelEvent(dim, x, y, z, id, data)` | Drop an item / explosion / a level event (sound or particle effect) |
-| `getFile()` / `dataFolder()` / `pluginManager()` / `plugins()` | Your jar / your folder / the plugin manager / loaded plugins |
-| `server().getServerVersion()` / `getGameVersion()` / `getProtocolVersion()` / `getApiVersion()` | Name and build (e.g. `BlockNes 1.7.0 beta`), `0.15.10`, `84`, `1.6` |
-| `server().onlinePlayers()` / `getOps()` / `getConfigString(key, def)` / `getConfigInt` / `getConfigBoolean` | Players, operator names, values from `server.properties` |
-| `name()`, `version()`, `author()`, `description()` | Plugin metadata |
-| `ignite(p, seconds)` / `extinguish(p)` / `isOnFire(p)` | Set a player on fire (goes through `EntityCombust`, which a plugin can cancel) / put the fire out / check it |
-| `errorCount()` / `slowCallCount()` | Handler errors and slow calls so far: the counts that `plugin-max-errors` and `plugin-max-slow-calls` look at |
-| `saveConfig()` / `isDisabled()` / `isHudVisible(p)` / `getPermission(node)` | Save `config()` now / the opposite of `isEnabled()` / whether the scoreboard is shown to a player / the registered `Permission` for a node |
-
-Colors use the Minecraft `§` codes (`\u00a7a` in Java strings).
-
-### Player
-
-`Player` objects come from events, commands and `players()`:
-
-<details>
-<summary>Player methods (15 entries)</summary>
-
-| Call | Description |
-| --- | --- |
-| `p.getName()` / `getDisplayName()` / `setDisplayName(n)` | Login name / name shown in chat |
-| `p.getHealth()` / `getMaxHealth()` / `getFoodLevel()` / `getSaturation()` | Health (0-20), hunger |
-| `p.getX()` / `getY()` / `getZ()` / `getYaw()` / `getPitch()` | Position and look direction |
-| `p.getDimension()` / `getWorld()` / `getGamemode()` | Dimension, world, game mode |
-| `p.getItemInHand()` / `getInventory()` | Item in hand, inventory |
-| `p.isOnline()` / `isDead()` / `isSleeping()` / `isOp()` / `setOp(true)` | State and operator flag |
-| `p.getAddress()` / `getUniqueId()` | IP address and UUID |
-| `p.sendMessage(m)` / `sendPopup(m)` / `sendTip(m)` | Messages |
-| `p.kick(reason)` / `teleport(x, y, z)` / `setGamemode(gm)` / `heal(n)` / `damage(n, cause)` / `kill()` / `setHealth(v)` | Same as the helpers above. Health changes go through `PlayerHeal` / `PlayerDamage`, so they can be cancelled |
-| `p.getPing()` | Round-trip latency in ms (RakNet ping every second). `-1` until the first answer, and again after 5 s without one |
-| `p.getNameTag()` / `setNameTag(text)` | Text above the head, seen by the players who see `p`. `null` = the real name; at most 256 characters |
-| `p.isNameTagVisible()` / `setNameTagVisible(bool)` | Show or hide that text |
-| `p.getLevel()` / `getPosition()` / `getIp()` | World, position and IP without the port (API 1.6) |
-| `p.getPlayerInventory()` | Inventory that updates the client (API 1.6) |
-| `p.sendTitle(title, subtitle)` / `addTitle(...)` / `hasPermission(node)` | Titles and permission check (API 1.6) |
-
-</details>
-
-#### Latency and text above the head
-
-`p.getPing()` is measured with RakNet ping/pong: the server sends a ping every second and times the answer. It stays `-1` until an answer arrives, and goes back to `-1` if nothing comes back for 5 seconds.
-
-The text above the head is the nametag. This example shows each player's name and latency, refreshed every second:
-
-```java
-runRepeating(0, 20, () -> {
-    for (Player p : server().onlinePlayers()) {
-        p.setNameTag(p.getName() + " - " + (p.getPing() < 0 ? "?" : p.getPing() + " ms"));
-    }
-});
-```
-
-`setNameTag` sends the change only to the players who see `p`, and only when the text really changes. The tests of this release check what the server sends, not how a real client draws it; check the nametag on a real 0.15.10 client before relying on its layout.
-
-### Compiling your plugin
-
-Compile against `server-plugin-api.jar`, add `plugin.properties` (and an optional `config.properties`) to the jar, and put the result in `plugins/`:
-
-```sh
-mkdir -p out plugins
-javac -source 11 -target 11 -encoding UTF-8 -cp server-plugin-api.jar -d out $(find src -name '*.java')
-cp plugin.properties config.properties out/
-jar --create --file plugins/MyPlugin.jar -C out .
-```
-
-Restart the server or run `/plugins reload`. If `javac` / `jar` are not available, use `java -m jdk.compiler/com.sun.tools.javac.Main` and `java -m jdk.jartool/sun.tools.jar.Main` instead.
-
-### Minimal example
-
-```java
-package example;
-
-import net.BlockNes.plugin.Events;
-import net.BlockNes.plugin.Plugin;
-
-public class HelloWorld extends Plugin {
-    @Override public void onEnable() {
-        on(Events.PlayerJoin.class, e -> message(e.player, "Welcome, " + e.player.name + "!"));
-        command("hello", "greets you", "", false, (s, a) -> s.send("Hello " + s.name() + "!"));
-        log("ready");
-    }
-}
+HolaMundo/
+├── plugin.properties
+└── src/ejemplo/HolaMundo.java
 ```
 
 `plugin.properties`:
 
 ```properties
-name=HelloWorld
-main=example.HelloWorld
+name=HolaMundo
+main=ejemplo.HolaMundo
 version=1.0
 author=You
-description=Greets players
+description=Says hello
+api=1.7
 ```
 
-## Class reference
+`src/ejemplo/HolaMundo.java`:
 
-Every class, interface and enum in `net.BlockNes` (except `Main`) is in `server-plugin-api.jar`, and so are the RakNetLib classes in `raknetlib`. This section names all of them, with their package and what they do, so you never have to guess a class name or a package.
+```java
+package ejemplo;
 
-Each class is marked as one of two things:
+import net.BlockNes.plugin.Events;
+import net.BlockNes.plugin.Plugin;
 
-- **API**: plugins are meant to use it. It follows the API versions described above.
-- **Internal**: the server uses it. You can read it, but it can change in any version, so do not depend on it. When an internal class does something you need, use the API helper listed next to it (for example `banPlayer` instead of `AccessLists`).
+public class HolaMundo extends Plugin {
+    @Override
+    public void onEnable() {
+        log("HolaMundo " + version() + " enabled");
 
-RakNetLib (`raknetlib.*`) is a separate library with its own repository, so its classes are not listed here.
+        // Listen to an event (runs on the server thread)
+        on(Events.PlayerJoin.class, e -> {
+            broadcast(color("&e" + e.player.name + " joined the game"));
+            message(e.player, color("&aWelcome, " + e.player.name + "!"));
+        });
 
-### Names that look alike
+        // Register a command: /hello [name]
+        command("hello", "Say hello", "[name]", false, (sender, args) -> {
+            String who = args.length > 0 ? args[0] : sender.name();
+            sender.send("Hello, " + who + "!");
+        });
+    }
 
-- **`Task` and `AsyncTask` exist twice.** `net.BlockNes.plugin.Task` and `net.BlockNes.plugin.AsyncTask` are the ones that `runLater`, `runRepeating` and `runAsync` use. `net.BlockNes.scheduler.Task` and `net.BlockNes.scheduler.AsyncTask` are the ones that `getServer().getScheduler()` uses. Their methods differ: `onRun()` and `onCompletion()` in `plugin`, `onRun(long currentTick)` and `onCompletion(Server)` in `scheduler`.
-- **`Item` and `ItemEntity`.** `Item` is an item stack (in an inventory, a menu or a recipe). `ItemEntity` is an item lying on the ground (internal).
-- **`Level` and `World`.** `Level` is the world that plugins see. `World` is the internal world behind it.
-- **`Command` and `command(...)`.** `Command` is a command written as a class. `command(...)` takes a lambda instead.
-- **`Events.PlayerJoin` and `PlayerJoinEvent`.** The first one is what you pass to `on(...)`. The second one is an interface you can listen to instead. See *Events*.
-- **Block ids are plain numbers.** There is no class of block constants: for example `1` is stone and `4` is cobblestone. Mob ids and enchantment ids do have constants (`Mob` and `Enchantments`).
+    @Override
+    public void onDisable() {
+        log("HolaMundo disabled");
+    }
+}
+```
 
-### API classes
+Build it and drop the jar in `plugins/` (details in [Building a plugin](#building-a-plugin)):
 
-#### Server and players
+```sh
+mkdir -p build
+javac -source 11 -target 11 -encoding UTF-8 \
+      -cp /path/to/server-plugin-api.jar -d build src/ejemplo/HolaMundo.java
+cp plugin.properties build/
+(cd build && jar cf ../HolaMundo.jar .)
+cp HolaMundo.jar /path/to/server/plugins/
+```
 
-| Class | What it is |
+Start the server (or run `/plugins reload`). With the server in English you should see:
+
+```
+Enabled plugin HolaMundo v1.0
+```
+
+Typing `/hello` in game answers `Hello, <your name>!`.
+
+---
+
+## Building a plugin
+
+### What you need
+
+- A JDK. The server itself needs **Java 17 or newer**. Your plugin can be compiled with `-source 11 -target 11` (that is what the server build uses) or any newer level that the server's Java can run.
+- `server-plugin-api.jar`. It is produced by the server build (`server/target/server-plugin-api.jar`) and published with each release. It contains the `net.BlockNes.*` classes (without the entry class `net.BlockNes.BlockNes`; `AccessLists` is now `net.BlockNes.BlockNes.AccessLists`) and the `raknetlib.*` classes (for example `BinaryStream`).
+
+### Compile and package
+
+1. Compile your sources against `server-plugin-api.jar`. It is **compile-only**: do not bundle it inside your jar.
+2. Put `plugin.properties` (and optional `config.properties` and `lang/*.properties`) at the **root** of the jar, next to your compiled classes.
+3. Copy the jar to `plugins/`.
+
+```sh
+javac -source 11 -target 11 -encoding UTF-8 -cp server-plugin-api.jar -d build $(find src -name '*.java')
+cp plugin.properties build/            # also config.properties and lang/ if you have them
+(cd build && jar cf ../MyPlugin.jar .)
+```
+
+If your copy of the server includes the helper script, `compiler.sh <plugin folder>` does the same: it compiles against `server/target/server-plugin-api.jar` and writes `plugins/<name>.jar` with `plugin.properties`, `config.properties` and `lang/` inside.
+
+### Important notes
+
+- The **main class** must extend `Plugin` (or `PluginBase`) and have a public **no-argument constructor** (the default one is fine). Do your setup in `onEnable()`, not in the constructor.
+- The plugin `name` may only contain letters, digits, `_` and `-`. Names are not case sensitive when you look a plugin up (`plugin("eco")` finds `Eco`).
+- Two plugins (jar, folder or `.java`) with the same `name`: only the first one is loaded (the second one is skipped with a warning).
+- Packages: the old `net.BlockNes.raknet` package no longer exists. If your plugin imported it, change the imports to **`raknetlib`**.
+- Do not copy server classes into your jar. The server already provides them.
+- If your plugin only uses the classes of another plugin (an API jar, for example), compile against that plugin's jar too, and list it in `depend` or `softdepend`.
+
+### Source plugins: no jar needed
+
+For testing you do not have to build a jar every time. The server can also load a plugin **straight from its `.java` files** and compile it itself when it starts. Jars keep working exactly as before, and you can mix both in the same `plugins/` folder.
+
+**Requirement:** the server must run on a **JDK** (it needs `javac`), not a plain JRE. If it runs on a JRE, the plugin is skipped with a warning that says so.
+
+There are two layouts:
+
+**1. A folder** (recommended; several files, config and translations):
+
+```
+plugins/
+  MyPlugin/
+    plugin.properties        <- same file as in a jar
+    config.properties        <- optional, same as in a jar
+    lang/en.properties       <- optional
+    mypkg/MyPlugin.java      <- any number of .java files, in any subfolder
+```
+
+The folder needs a `plugin.properties`. `name` may be left out (the folder name is used). The folder is also the plugin's **data folder**, so `config.properties` and `lang/` are read from it, and files the plugin saves go there too.
+
+**2. A single `.java` file:**
+
+```
+plugins/
+  Solo.java
+  Solo.properties            <- optional: version, depend, api, commands...
+```
+
+The plugin name is the file name (`Solo`). The main class is taken from the file: its `package` line plus the file name, so the class must be called like the file (`public class Solo extends Plugin`).
+
+How it behaves:
+
+- The code is compiled when the server starts, on `/plugins reload`, and on `/plugins enable <name>`. So the loop is: edit the `.java`, run `/plugins reload`, test.
+- Compiled classes are kept in `plugins/.cache/<name>/`. If no `.java` file changed (size and modification time), nothing is recompiled. You can delete `.cache` at any time.
+- The compile classpath is the server plus the plugins you list in `depend` / `softdepend` (jar or source). Load order works as for jars.
+- If the code does not compile, the plugin is **not loaded** and the console lists the errors (file, line, message; up to 20). The rest of the server keeps going. Fix the file and `/plugins reload`.
+- Folders whose name starts with a dot, and folders without `plugin.properties`, are ignored.
+- When the plugin is ready, you can still package it as a jar (see above) to distribute it.
+
+---
+
+## plugin.properties reference
+
+Every plugin jar needs a `plugin.properties` at its root. Only `name` and `main` are required.
+
+```properties
+# required: letters, digits, _ and -
+name=MyPlugin
+# required: the class that extends Plugin
+main=com.me.MyPlugin
+# default 1.0
+version=1.2
+# one author, or several (they are merged)
+author=Me
+authors=Ana,Luis
+website=https://example.com
+# text shown in [brackets] in log lines (default: the name)
+prefix=MP
+description=What it does
+# minimum API version the plugin needs
+api=1.7
+
+# must be loaded before this plugin, or this plugin does not load
+depend=Eco,Other
+# loaded first when present, but not required
+softdepend=Optional
+# this plugin loads before "Another"
+loadbefore=Another
+
+# permissions registered for you (default: op | notop | true | false)
+permissions.myplugin.use.description=Use the plugin
+permissions.myplugin.use.default=true
+permissions.myplugin.admin.default=op
+# children: "-x" means the child is denied
+permissions.myplugin.admin.children=myplugin.use,-myplugin.secret
+
+# commands: default description / usage / aliases / permission for commands you register in code
+commands.home.description=Go home
+commands.home.usage=[name]
+commands.home.aliases=h,casa
+commands.home.permission=myplugin.use
+commands.home.permission-message=You cannot use /home
+```
+
+Notes:
+
+- `api` is the **minimum** version. A plugin that asks for an API newer than the server's (`1.7`) is **not loaded**; the console says so. `api=1.5` loads fine on a 1.7 server. A plugin without `api` loads without the check.
+- Declaring a command in `plugin.properties` does not register it. You still register it in code (see [Commands](#commands)); the properties only supply defaults for what you leave empty. If you declare a command and never register it, the server warns in the log when the plugin enables.
+- Permissions listed here are registered for you when the plugin loads.
+- The file is a Java `.properties` file read as UTF-8. A `#` only starts a comment at the **start of a line**; if you write `name=Foo # note`, the note becomes part of the value.
+
+---
+
+## Lifecycle and load order
+
+```
+read plugin.properties of every jar ──► sort by depend / softdepend / loadbefore
+        │
+        ▼
+create instance ──► onLoad()          (for every plugin, before any onEnable)
+        │
+        ▼
+onEnable()  ──► PluginEnable event    (plugin is now enabled)
+        │
+        ▼   ... server runs ...
+        │
+PluginDisable event ──► onDisable() ──► everything the plugin registered is removed
+```
+
+- **Order.** `depend` is always respected: a plugin whose hard dependency is missing is not loaded (the console lists what is missing). `softdepend` and `loadbefore` are respected when possible; if they form a cycle they are ignored. Plugins are otherwise taken in file-name order.
+- **`onLoad()`** runs for all plugins before any plugin's `onEnable()`. Use it for light setup only.
+- **`onEnable()`**: register events, commands, tasks, permissions here. If it throws an exception, that plugin is unloaded and the server continues with the others.
+- **`onDisable()`**: save your data. You do **not** have to unregister anything: after `onDisable()` the server removes the plugin's event handlers, commands (and their aliases), tasks (including pending async tasks), HUD lines and boss bars, services, permission attachments, permissions, open menus (their `onClose` is called), recipes and metadata. Player data opened with `playerData()` is saved.
+- **Disabling** a plugin also disables the plugins that `depend` on it. The same happens when you run `/plugins disable <name>`.
+- Plugins are disabled in reverse load order on shutdown.
+
+Server commands for plugins:
+
+| Command | What it does |
 | --- | --- |
-| `net.BlockNes.Server` | The server. Get it with `getServer()` in a plugin, or `Server.getInstance()`. |
-| `net.BlockNes.Player` | A connected player. See *Player*. |
+| `/plugins` (or `/pl`) | Lists the loaded plugins with their versions. Everyone can use it |
+| `/plugins reload` | Disables every plugin, reads the folder again and enables them. OP only |
+| `/plugins enable <name>` | Enables one plugin without restarting. It reads the jar again, so you can replace the jar first. OP only |
+| `/plugins disable <name>` | Disables one plugin (and its dependents). OP only |
 
-#### net.BlockNes.plugin
+Reloading creates a **new class loader**, so static fields of the old plugin are gone. Keep important state in files.
 
-| Class | What it is |
+---
+
+## Plugin API
+
+Everything below is a method of `Plugin` (`net.BlockNes.plugin.Plugin`) unless it says otherwise. `PluginBase` is an empty subclass of `Plugin`; extend whichever you like.
+
+Common imports:
+
+```java
+import net.BlockNes.Player;                    // a connected player
+import net.BlockNes.Server;                    // the server
+import net.BlockNes.item.Item;                 // items
+import net.BlockNes.mob.Mob;                   // mobs
+import net.BlockNes.plugin.*;                  // Plugin, Events, Priority, Config, Menu, Region, Args...
+import net.BlockNes.command.CommandSender;     // who ran a command (player or console)
+```
+
+> `net.BlockNes.plugin.*` also contains `Task` and `AsyncTask`. The PocketMine-style scheduler has classes with the same names in `net.BlockNes.scheduler`. Import the ones you mean explicitly (see [Tasks and threads](#tasks-and-threads)).
+
+### Information and logging
+
+| Method | Returns |
 | --- | --- |
-| `Plugin` | Base class of your plugin. Its helpers (`on`, `command`, `runLater`, `menu`, `config`...) are described above. |
-| `PluginBase` | The same as `Plugin`, with the PocketMine-MP name. |
-| `PluginManager` | Loads and enables plugins. `getPluginManager()`. |
-| `PluginDescription` | Read-only data from `plugin.properties`. `getDescription()`. |
-| `PluginLogger` | Logger with your plugin's prefix. `getLogger()`: `info`, `warning`, `error`, `debug`, `logException`. |
-| `Events` | Holds the event classes, such as `Events.PlayerJoin`. See *Events*. |
-| `Event` | Base class of every event: `isCancelled()`, `setCancelled(boolean)`, `getEventName()`. Extend it and send it with `fire(...)`. |
-| `EventHandler` | Annotation for the methods of a listener class. |
-| `Priority` | Order of the handlers: `LOWEST`, `LOW`, `NORMAL`, `HIGH`, `HIGHEST`, `MONITOR`. |
-| `Command` | A command written as a class: usage, aliases and permission. Register it with `registerCommand(...)`. |
-| `PluginCommand` | Interface of the lambda in `command(name, description, usage, permission, (sender, args) -> ...)`. |
-| `Permission` | A registered permission node, from `getPermission(node)`. |
-| `PermissionDefault` | Default value of a permission: `OP`, `NOT_OP`, `TRUE` or `FALSE`. |
-| `PermissionAttachment` | Temporary permissions for one player, from `addAttachment(player)`. |
-| `Config` | The plugin's `config.properties`, with typed getters. `config()`. |
-| `JsonConfig` | A JSON file in the plugin folder, with dotted paths. `jsonConfig("data.json")`. |
-| `PlayerStore` | One JSON file per player. `playerData()`. |
-| `Menu` | Chest menu with buttons. `menu(rows)`. |
-| `HudPosition` | Side of the scoreboard: `RIGHT`, `LEFT` or `CENTER`. |
-| `Region` | Block region with `fill`, `replace`, `count`, `copy` and `paste`. `Region.Snapshot` is a copy. |
-| `Text` | Helpers for colors, bars, times and numbers. |
-| `Args` | Safe readers for command arguments: a missing or bad value returns the default. |
-| `Cooldowns` | Cooldowns per key: `tryUse(key, ms)` and `remainingSeconds(key)`. |
-| `Task` | The task that `runLater` and `runRepeating` return: `cancel()`, `id()`, `isRepeating()`. |
-| `AsyncTask` | Background task for `runAsync(new AsyncTask() { ... })`. |
+| `name()` / `getName()` | The plugin name |
+| `version()` / `getVersion()` | The version from `plugin.properties` |
+| `author()`, `description()` | Authors (joined with commas) and description |
+| `getDescription()` | The whole `PluginDescription` (authors, website, depend, declared commands and permissions...) |
+| `getFile()` | The path of the jar |
+| `dataFolder()` / `getDataFolder()` | `plugins/<Name>/` (created if missing) |
+| `server()` / `getServer()` | The `Server` |
+| `pluginManager()` | The `PluginManager` |
+| `plugins()` | Every loaded plugin |
+| `plugin("Name")` | One plugin by name, or `null` |
+| `isEnabled()` / `isDisabled()` | Whether `onEnable()` finished |
+| `setEnabled(true/false)` | Enable or disable this plugin. After disabling, this object is no longer valid; enabling again reads the jar again |
 
-#### Events
+Logging:
 
-The event interfaces are in `net.BlockNes.event.player`, `block`, `entity`, `inventory`, `level`, `server` and `plugin`, and they are all listed in *All event interfaces* above. There are 96 of them. The three category interfaces (`PlayerEvent`, `EntityEvent` and `PluginEvent`) group them and are not events themselves. `Cancellable` and `Listener` are in `net.BlockNes.event`.
+```java
+log("message");                      // [Prefix] message, at INFO level
+logWarn("careful");                  // WARNING
+getLogger().info("...");             // also notice(), warning(), error(), critical(), alert(), emergency()
+getLogger().debug("...");            // only printed when debugging is on (blocknes.yml console.debug or -Dblocknes.debug=true)
+getLogger().logException(exception); // error with the stack trace
+```
 
-Having an interface does not mean the server fires that event. Two of them are declared but no event is fired for them yet: `BlockFadeEvent` and `EntityTransformEvent`. The Events table marks them. The other 94 are fired from at least one place in the server, and the Events table lists their main cases.
+Every log line gets the plugin's `prefix` in brackets.
 
-#### net.BlockNes.scheduler
+### Listening to events
 
-| Class | What it is |
+There are several ways. All of them run on the server thread, and all of them are removed when the plugin is disabled.
+
+```java
+// 1) Lambda (the shortest). Default priority NORMAL.
+on(Events.PlayerJoin.class, e -> message(e.player, "Welcome!"));
+
+// 2) With a priority.
+on(Events.PlayerChat.class, Priority.HIGH, e -> e.message = e.message.toUpperCase());
+
+// 3) With a priority, skipping events that another plugin already cancelled.
+on(Events.BlockBreak.class, Priority.HIGH, true, e -> { /* only if not cancelled */ });
+
+// 4) Only once: the handler removes itself after the first call.
+once(Events.PlayerQuit.class, e -> log("first quit: " + e.player.name));
+
+// 5) @EventHandler methods in any object (PocketMine / Bukkit style).
+public class Guard {
+    @EventHandler(priority = Priority.HIGH, ignoreCancelled = true)
+    public void onBreak(Events.BlockBreak e) {
+        if (e.id == 7) {                          // bedrock
+            e.setCancelled(true);
+            message(e.player, color("&cYou cannot break bedrock"));
+        }
+    }
+}
+// in onEnable():
+registerEvents(new Guard());                      // returns how many handlers it registered
+```
+
+Removing handlers early:
+
+```java
+unregisterEvents(guard);       // the handlers of one registerEvents(guard); returns how many
+unregisterAllEvents();         // every handler of this plugin
+```
+
+**What you can listen to.** The type you pass to `on(...)` can be:
+
+- the event class: `Events.PlayerChat.class`;
+- the PocketMine-name interface that the event implements: `net.BlockNes.event.player.PlayerChatEvent.class`;
+- a base class or interface to receive a whole family: `Events.PlayerEvent.class` (every player event), `net.BlockNes.event.player.PlayerEvent.class`, `Event.class` (every event), `net.BlockNes.event.entity.EntityDamageEvent.class` (player and mob damage)...
+
+A method handler (`@EventHandler`) must have **exactly one parameter**, the event type. Otherwise it is skipped with a warning.
+
+**Priorities.** `LOWEST` runs first, then `LOW`, `NORMAL`, `HIGH`, `HIGHEST`, and `MONITOR` runs **last**. Use `MONITOR` only to observe the final result (do not change the event there). Handlers with the same priority run in the order they were registered. A later handler sees the changes (and the cancellation) made by earlier ones.
+
+**Cancelling.** Events that say "cancelable" in the [event list](#events) respect `e.setCancelled(true)`. On informational events, `setCancelled` does nothing. `ignoreCancelled = true` makes your handler skip events that are already cancelled.
+
+**Editing.** Many events have public fields you can change before the server uses them (`e.message`, `e.amount`, `e.drops`, `e.toX`...). The event list says which.
+
+**Your own events.** Extend `Event`, create it and pass it to `fire`. Other plugins listen to it like any other event:
+
+```java
+public static class ArenaJoinEvent extends Event {
+    public final Player player;
+    public ArenaJoinEvent(Player p) { player = p; }
+}
+
+// listening:
+on(ArenaJoinEvent.class, e -> broadcast(color("&6" + e.player.name + " entered the arena")));
+
+// firing (returns the event, so you can check isCancelled() afterwards):
+ArenaJoinEvent ev = fire(new ArenaJoinEvent(player));
+if (ev.isCancelled()) return;
+```
+
+**Every event has two ways to read its data**: public fields (`e.player`, `e.x`, `e.id`) and the PocketMine-style getters of its interface (`e.getPlayer()`, `e.getX()`, `e.getBlockId()`). Use whichever you prefer.
+
+### Commands
+
+There are four ways to register a command (A to D below). All of them are removed automatically when the plugin is disabled.
+
+Plugin commands are checked **before** the built-in server commands, so a plugin command overrides a built-in command with the same name (`/help`, `/tp`...). If two plugins register the same name, the last one wins and the log prints a warning.
+
+Command names are lower-case; a leading `/` is ignored. Players can type them in chat; the console can type them without the `/`.
+
+```java
+// A) Lambda: (sender, args). 4th argument = true -> OPs and console only; false -> everybody.
+command("hello", "Say hello", "[name]", false, (sender, args) -> {
+    sender.send("Hello, " + (args.length > 0 ? args[0] : sender.name()) + "!");
+});
+
+// B) Lambda protected by a permission node (OPs always pass).
+command("kit", "Get a starter kit", "", "tour.kit", (sender, args) -> { ... });
+
+// C) PocketMine-style CommandExecutor: (sender, command, label, args) -> boolean.
+//    Return false to print "Usage: /give2 <player> [count]".
+command("give2", "Give items", "<player> [count]", "tour.admin", (sender, cmd, label, args) -> {
+    if (args.length < 1) return false;
+    Player target = player(args[0]);
+    if (target == null) { sender.send("Player not found"); return true; }
+    int n = Args.getInt(args, 1, 1, 1, 64);
+    give(target, Item.get(264, 0, n));
+    sender.send("Gave " + n + " diamonds to " + target.name);
+    return true;
+});
+
+// D) A command as a class.
+registerCommand(new Command("arena", "Join the arena", "", "a") {   // name, description, usage, aliases...
+    @Override public boolean execute(CommandSender s, String label, String[] args) {
+        Player p = playerExact(s.name());
+        if (p == null) return false;          // not a player: prints the usage
+        fire(new ArenaJoinEvent(p));
+        return true;
+    }
+});
+
+alias("kit", "starter", "pack");              // more names for a command of this plugin
+```
+
+The 4th argument of the lambda forms (`command(name, description, usage, X, ...)`) decides who can use it:
+
+| `X` | Meaning |
 | --- | --- |
-| `ServerScheduler` | The scheduler. `getServer().getScheduler()`. |
-| `Task` | Task for the scheduler: implement `onRun(long currentTick)`. `onCancel()` runs if it is cancelled. |
-| `AsyncTask` | Task for `scheduleAsyncTask`: `onRun()` runs on another thread and `onCompletion(Server)` on the server thread. |
-| `PluginTask` | Task that belongs to a plugin: extend it and call `super(plugin)`. It is cancelled when the plugin is disabled. |
-| `TaskHandler` | What the `schedule...` methods return: `getTaskId()`, `cancel()`, `isCancelled()`, `isRepeating()`. |
+| `false` or `""` | Everyone |
+| `true` or `"op"` | OPs and the console |
+| `"some.node"` | Players that have the [permission](#permissions) (OPs and the console always do) |
 
-#### net.BlockNes.command
+Useful details:
 
-| Class | What it is |
+- **The sender.** Forms A and B give a `Commands.Sender`; C and D give a `CommandSender`. Both have `name()`, `isOp()`, `send(String)` and `isPlayer()`. The console is named `CONSOLE`. To get the `Player` of a sender: `playerExact(sender.name())` (it is `null` for the console).
+- **Usage.** In forms C and D returning `false` prints `Usage: /name <usage>`.
+- **Defaults from `plugin.properties`.** Anything you leave empty (description, usage, permission) is taken from `commands.<name>.*`; aliases and `permission-message` come from there too.
+- **No permission.** The sender sees "You do not have permission to use this command" (or the `permission-message` you set).
+- **Errors.** If the command code throws, the sender is told something went wrong and the error goes to the log.
+- **Help.** Plugin commands are listed in `/help`.
+- **Other plugins' commands.** `getCommand("name")` returns one of *your* commands; `unregisterCommand("name")` removes it. `getServer().getCommandMap()` can see every plugin command.
+- **Run a command from code.** `dispatchCommand(sender, "give Steve 1 1")`, with `console()` as a ready-made console sender: `dispatchCommand(console(), "say hi")`.
+
+The `Args` helper reads arguments safely. Each method returns the default value when the argument is missing or invalid:
+
+```java
+Args.has(args, 1)                       // is there an argument 1?
+Args.get(args, 0, "default")            // String
+Args.getInt(args, 1, 1)                 // int, default 1
+Args.getInt(args, 1, 1, 1, 64)          // int in 1..64, otherwise the default
+Args.getDouble(args, 2, 0.0)            // finite decimal number
+Args.getBoolean(args, 1, false)         // true/on/yes/si/1 and false/off/no/0
+Args.join(args, 1)                      // arguments 1.. joined with spaces (a chat message)
+```
+
+### Permissions
+
+A permission is a text node such as `tour.kit`. Console and **OPs have every permission**. For everyone else the server decides in this order, and the **first rule that says something wins**:
+
+1. **Attachments** that plugins added to the player (temporary; see below). If several attachments mention the node, the last one wins.
+2. **`plugins/permissions.properties`**, the file the server owner edits.
+3. **Children** of a permission the player has: if the player has `tour.admin` and `tour.admin` lists `tour.kit` as a child, they get `tour.kit` (or are denied it, if the child is `-tour.kit`).
+4. The **default** of the registered permission: `TRUE` and `NOT_OP` grant it to non-OPs; `OP` and `FALSE` do not.
+5. A node nobody registered, with no rule: **denied**.
+
+Wildcards work in attachments and in the file: `tour.*` matches everything under `tour.`, and `*` matches everything. A `-` in front of a name in the file denies it.
+
+**Registering permissions** (so they have a default and show up in the tools). Either in `plugin.properties` (see above) or in code:
+
+```java
+registerPermission("tour.kit",   "Use /kit",   PermissionDefault.TRUE);   // everyone
+registerPermission("tour.admin", "Administer", PermissionDefault.OP);     // only OPs (the default)
+registerPermission("tour.vip",   "VIP perks");                            // same as OP
+Permission p = getPermission("tour.kit");                                 // any registered permission
+```
+
+`PermissionDefault` values: `OP`, `NOT_OP`, `TRUE`, `FALSE`.
+
+**Checking a permission:**
+
+```java
+if (hasPermission(player, "tour.kit")) { ... }
+if (player.hasPermission("tour.kit")) { ... }          // same, from the Player
+if (hasPermission(sender, "tour.kit")) { ... }         // a CommandSender
+```
+
+**`plugins/permissions.properties`.** Optional file owned by the server admin. Keys are player names or `group.<name>`:
+
+```properties
+# player = groups and/or permissions
+Steve=vip,tour.extra
+# group = permissions; "-x" denies; "@other" includes another group
+group.vip=tour.admin,-tour.secret,@default
+# the group "default" applies to every player
+group.default=tour.kit
+```
+
+Names are not case sensitive. The file is read when plugins load (and on `/plugins reload`).
+
+**Attachments** are temporary permissions a plugin gives to a player. They disappear when the plugin is disabled or the player leaves, so give them again in your `PlayerJoin` handler:
+
+```java
+PermissionAttachment a = addAttachment(player);
+a.setPermission("arena.enter", true);     // grant
+a.setPermission("arena.shop", false);     // deny
+a.unsetPermission("arena.shop");          // forget that entry
+a.remove();                               // remove the whole attachment
+
+addAttachment(player, "tour.vip", true);  // shortcut: one permission
+removeAttachment(a);
+```
+
+### Tasks and threads
+
+Time is counted in **ticks**: 20 ticks = 1 second. A delay of `0` or `1` means "next tick".
+
+```java
+Task t = runLater(40, () -> broadcast("2 seconds later"));          // once, after 40 ticks
+Task r = runRepeating(0, 20 * 60, () -> broadcast("every minute")); // delay, period
+
+// the body gets its Task, so it can cancel itself
+runRepeating(0, 20, task -> {
+    if (done()) task.cancel();
+});
+
+runTimes(0, 20, 5, i -> broadcast("run #" + i));                    // exactly 5 times (i = 0..4)
+
+countdown(5, n -> broadcast("Starting in " + n), () -> broadcast("Go!"));  // 5,4,3,2,1 then "Go!"
+```
+
+Managing tasks:
+
+```java
+t.cancel();                    // one task
+cancelTasks();                 // every task of this plugin
+cancelTask(id);                // by id (Task.getTaskId()); true if it was still pending
+isTaskQueued(id);              // is it still pending?
+getTask(id);                   // the scheduled Task or null
+```
+
+**Threads.** Everything above runs on the **server thread**. For work that can be slow (HTTP, files, databases, heavy calculations) use async methods, and only **touch players and the world from the server thread**:
+
+```java
+// Work in another thread, result delivered on the server thread:
+runAsync(() -> downloadSomething(),                       // other thread
+         result -> message(player, "Got: " + result));    // server thread
+
+// Fire-and-forget in another thread. Do NOT call players/world/Plugin API in here.
+runAsync(() -> writeBigFile());
+
+// AsyncTask: onRun() in another thread, onCompletion() on the server thread.
+int id = runAsync(new AsyncTask() {
+    @Override public void onRun() { setResult(heavy()); }
+    @Override public void onCompletion() { broadcast("Result: " + getResult()); }
+});
+// cancelRun() before it starts means nothing runs. If onRun() throws, isCrashed() is true.
+
+// From any thread, hand something back to the server thread (runs next tick):
+runSync(() -> player.health = 20);
+```
+
+If the plugin is disabled while an async job is running, its `done` callback / `onCompletion()` is **not** called.
+
+There are two `AsyncTask` classes: `net.BlockNes.plugin.AsyncTask` (`onCompletion()` has no parameters; use it with `runAsync(...)`) and `net.BlockNes.scheduler.AsyncTask` (`onCompletion(Server)`; use it with `getScheduler().scheduleAsyncTask(...)`). The same goes for `Task`. See [API 1.6 additions](#api-16-additions-inside-plugin).
+
+`Cooldowns`, `PlayerStore` and most plugin objects are meant for the server thread only.
+
+### Config and data files
+
+Each plugin owns the folder `plugins/<Name>/`. The API offers four ways to use it.
+
+**1. `config.properties`: simple settings.**
+
+```java
+Config cfg = config();                                   // plugins/<Name>/config.properties
+cfg.setDefault("welcome", "&aWelcome, %s!")              // only written if the key does not exist
+   .setDefault("kit-seconds", 60)
+   .save();
+
+String msg = cfg.getString("welcome", "Hi %s");
+int secs   = cfg.getInt("kit-seconds", 60);              // also getLong, getDouble, getBoolean
+List<String> worlds = cfg.getStringList("worlds");       // "a, b, c"
+cfg.set("kit-seconds", 30).save();
+cfg.has("key");  cfg.remove("key");  cfg.keys("kits.");  cfg.getKeys();  cfg.getAll();
+reloadConfig();                                          // read it again from disk
+```
+
+`Config` is a `java.util.Properties`, so all its methods work too. All getters return the default you give when the key is missing or the value is not valid. **`save()` rewrites the file and drops its comments.**
+
+If the jar contains a `config.properties` at its root, it is copied to the data folder the first time the config is used. If your jar has none, the server prints a warning (and the config simply starts empty), so ship one, even a nearly empty file.
+
+`saveDefaultConfig()` copies the jar's `config.properties` if it is not on disk yet. `saveConfig()` is `config().save()`.
+
+**2. JSON files: structured data.** Paths use dots (`"kits.vip.price"`), so keys themselves must not contain dots.
+
+```java
+JsonConfig data = jsonConfig("arenas.json");             // plugins/<Name>/arenas.json (starts empty)
+data.setDefault("arenas.1.spawn", 5);
+int spawn = data.getInt("arenas.1.spawn", 0);            // getString, getLong, getDouble, getBoolean, getList
+data.set("arenas.2.spawn", 7).save();                    // creates the missing parents, then writes the file
+data.has("arenas.2");  data.remove("arenas.2");  data.getKeys();  data.getAll();  data.reload();
+```
+
+`jsonConfig(...)` always opens the file again; keep the object in a field if you use it often. Nothing is written until you call `save()`.
+
+**3. Per-player data.** One JSON file per player in `plugins/<Name>/players/`. It uses the same API as `JsonConfig`:
+
+```java
+JsonConfig d = playerData().of(player);                  // or playerData().of("Steve")
+d.set("stats.kills", d.getInt("stats.kills", 0) + 1);
+if (playerData().exists("Steve")) { ... }
+playerData().saveAll();                                  // optional
+```
+
+Player names are not case sensitive (`Steve` and `steve` are the same file). The data of a player is **saved automatically when that player disconnects and when the plugin is disabled**, so you do not need to call `save()` after every change. The data stays in memory while the player is online. If the server crashes, changes that were not saved yet are lost: call `d.save()` right after an important change (a purchase, for example).
+
+**4. Files inside your jar.**
+
+```java
+InputStream in = getResource("lang/eng.properties");     // a file from your own jar, or null (close it when done)
+Path out = saveResource("kits.json");                    // copy it to the data folder if it is not there yet
+saveResource("kits.json", true);                         // true = overwrite
+```
+
+### Players and server
+
+Most methods take a `Player`. Useful fields of `Player`: `name`, `x`, `y`, `z`, `yaw`, `pitch`, `dimension` (`0` overworld, `1` nether), `health`, `food`, `gamemode` (`0` survival, `1` creative), `eid`, `loggedIn`, `spawned`, `totalXp`. Useful methods: `getPing()`, `getIp()`, `isCreative()`, `inHand()`, `getXpLevel()`, `getPosition()`, `getLevel()`, `getPlayerInventory()`, `hasPermission(node)`, `sendTitle(title, subtitle)`.
+
+Finding players:
+
+```java
+players();                          // every connected player (a copy of the list)
+player("ste");                      // by name; a name that starts with the text also matches
+playerExact("Steve");               // exact name (not case sensitive), or null
+isOnline("Steve");  onlineCount();  playerNames();  maxPlayers();
+playersIn(0);                       // players in the overworld (1 = nether)
+playersNear(0, x, y, z, 20);        // within 20 blocks, nearest first
+nearestPlayer(0, x, y, z, 50);      // the closest one within 50 blocks, or null
+mobsNear(0, x, y, z, 20);           // living mobs within 20 blocks
+```
+
+Messages:
+
+```java
+message(p, "text");                 // chat message to one player
+messagef(p, "&aYou have %d coins", n);   // String.format + & colors
+broadcast("text");                  // chat to everyone
+broadcastf("&e%s won!", name);
+broadcast("text", "perm.node");     // only players with that permission (OPs always)
+popup(p, "text");                   // text above the hotbar
+tip(p, "text");                     // small text in the middle of the screen
+broadcastPopup("text");  broadcastTip("text");
+```
+
+For titles, action bars and the scoreboard see [HUD](#hud-scoreboard-titles-boss-bars). Colors: write `&a`, `&l`... and convert with `color("&aText")` (see [Text](#text-arguments-and-cooldowns)). The server does **not** convert `&` automatically in `message`/`broadcast`, except in the `...f` variants.
+
+Doing things to players:
+
+```java
+teleport(p, x, y, z);               // same dimension, no event
+teleportChecked(p, x, y, z);        // passes through Events.PlayerTeleport; false if cancelled
+heal(p, 4);                         // passes through PlayerHeal (can be cancelled by other plugins)
+damage(p, 3, "died to a trap");        // normal damage (passes through PlayerDamage); see the note below
+kill(p);
+ignite(p, 5);  extinguish(p);  isOnFire(p);
+kick(p, "reason");  kickAll("Maintenance", "admin.bypass");   // everyone except players with that permission
+setGamemode(p, 1);                  // 0 survival, 1 creative
+giveXp(p, 10);
+Item left = give(p, Item.get(264, 0, 3));     // returns what did not fit (Item.AIR if everything fit)
+isOp(p);  setOp("Steve", true);
+```
+
+About `damage(p, amount, cause)`: `cause` is the text of the death message. If the player dies the server broadcasts `"<name> <cause>"` (for example `Steve died to a trap`). The server's own causes are written in Spanish (`se ahogo`, `cayo al vacio`, `murio de hambre`...), and it looks for some of those Spanish words (`cayo`, `vacio`, `ahogo`, `hambre`, `veneno`, `exploto`...) to decide how armor and potion effects reduce the damage. Any other text is treated as generic damage.
+
+Server settings and lists:
+
+```java
+banPlayer("Steve");  pardonPlayer("Steve");  isBanned("Steve");
+banIp("1.2.3.4");    pardonIp("1.2.3.4");    isBannedIp("1.2.3.4");
+whitelistAdd("Steve");  whitelistRemove("Steve");  isWhitelisted("Steve");
+setWhitelist(true);  isWhitelistOn();
+isPvpEnabled();  isSpawnMobsEnabled();
+time();  setTime(6000);  setTimeStopped(true);
+setWeather(Weather.RAINY, 6000);    // net.BlockNes.level.Weather: SUNNY, RAINY, RAINY_THUNDER, THUNDER. ticks <= 0 = random length
+strikeLightning(x, y, z);
+saveAll();                          // saves worlds, players and items; returns the number of chunks saved
+```
+
+### World, mobs and items
+
+`dimension` is always `0` (overworld) or `1` (nether). Call these from the server thread.
+
+```java
+int id = getBlock(0, x, y, z);                     // block id
+setBlock(0, x, y, z, 20, 0);                       // dimension, x, y, z, id, meta; players see it
+int top = highestBlockAt(0, x, z);                 // highest non-air block in the column, or -1
+World w = world(0);                                // the raw world
+
+Mob zombie = spawnMob(0, Mob.ZOMBIE, x, y, z);     // Mob.ZOMBIE, Mob.COW, ... or null if the id is unknown
+List<Mob> mobs = mobsIn(0);                        // living mobs (a copy)
+
+dropItem(0, x, y, z, Item.get(264, 0, 3));         // item on the ground
+explode(0, x, y, z, 3.0);                          // like TNT: fires Events.Explosion and breaks blocks
+playLevelEvent(0, x, y, z, 2001, 1);               // particles/sounds for nearby players (2001 = block break)
+```
+
+Block, item and effect ids are the numeric ids of Minecraft PE 0.15: stone `1`, diamond `264`, bread `297`... Effects use constants from `net.BlockNes.item.Food` (`EFFECT_POISON`, `EFFECT_REGENERATION`...).
+
+**Items** are immutable objects. Create them with `Item.get(id)`, `Item.get(id, damage)` or `Item.get(id, damage, count)` and change them with the `with...` methods, which return a new item:
+
+```java
+Item sword = Item.get(272)                                // wooden sword
+        .withName(color("&6Starter Sword"))               // custom name (colors allowed)
+        .withLore(Arrays.asList("line 1", "line 2"))
+        .withEnchantment(9, 2)                            // enchantment id, level
+        .withUnbreakable(true)
+        .withCount(1);
+sword.getId();  sword.getDamage();  sword.getCount();  sword.getCustomName();  sword.isAir();
+```
+
+`Item.AIR` means "nothing". Names and lore are limited in length (the server throws `IllegalArgumentException` if they are too long).
+
+Giving items: `give(player, item)` returns what did not fit. The PocketMine-style inventory also works: `player.getPlayerInventory().addItem(item)`, `removeItem`, `setItem`, `getItemInHand()`, `contains`, `clear()`.
+
+### Menus
+
+A `Menu` is a chest GUI (3 or 6 rows) whose slots are **buttons**: players cannot take or move the items, and while the menu is open their inventory is frozen, so nothing can be lost or duplicated.
+
+```java
+Menu m = menu(3);                                        // 3 rows = 27 slots, or 6 rows = 54
+m.border(Item.get(160, 7, 1).withName(" "));             // decorate the edge
+m.setItem(13, Item.get(297, 0, 1).withName("Bread"), click -> {
+    give(click.player, Item.get(297, 0, 1));             // click is an Events.MenuClick
+    closeMenu(click.player);
+});
+m.onClose(p -> message(p, "Menu closed"));               // closed by the player, closeMenu, disconnect or plugin disable
+openMenu(player, m);
+```
+
+- `setItem(slot, item)` is a decoration; `setItem(slot, item, handler)` is a button. Calling `setItem` again updates the screen of everyone looking at it. `fill(item)`, `border(item)` and `clear()` fill, frame and empty it. `refresh()` resends everything after many changes.
+- `click.player`, `click.slot`, `click.item` (what is in the slot), `click.proposed` (what the client tried to put there) and `click.menu` are available. You can also listen to `Events.MenuClick` globally (it is cancellable: cancelling it stops the slot's handler).
+- The menu is always reverted on the client after a click, whatever your handler does.
+- Useful: `m.viewers()`, `isMenuOpen(player)`, `closeMenu(player)`.
+- The Minecraft PE 0.15 client does **not** show a title for these windows.
+
+### Recipes
+
+Recipes belong to your plugin and are removed when it is disabled.
+
+```java
+// Shaped (like the crafting table): rows of up to 3 characters (a space = empty slot)
+Map<Character, Item> ing = new HashMap<>();
+ing.put('D', Item.get(264));     // diamond
+ing.put('S', Item.get(280));     // stick
+addShapedRecipe(Item.get(278), new String[]{"DDD", " S ", " S "}, ing);      // diamond pickaxe
+
+// Shapeless: ingredients in any slot (at most 9 units)
+addShapelessRecipe(Item.get(297, 0, 2), Arrays.asList(Item.get(296), Item.get(296)));
+
+Recipe r = addShapedRecipe(...);          // both return the recipe (net.BlockNes.item.Recipes.Recipe)
+removeRecipe(r);                          // remove one (yours or another plugin's)
+```
+
+You can also react to crafting with `Events.CraftItem` (cancellable) and `Events.SmeltItem`.
+
+### Regions
+
+A `Region` is a box of blocks between two corners (both inclusive; they are sorted for you).
+
+```java
+Region r = region(0, 0, 60, 0, 9, 70, 9);       // dimension, x1, y1, z1, x2, y2, z2
+r.volume();  r.width();  r.height();  r.depth();  r.contains(x, y, z);
+r.count(1);                                     // how many blocks of id 1
+r.fill(1, 0);                                   // fill with stone; returns how many blocks were written
+r.replace(1, 4, 0);                             // replace id 1 with id 4 meta 0; returns how many
+Region.Snapshot snap = r.copy();                // copy ids + metas to memory (max 1,000,000 blocks)
+r.paste(snap, 20, 60, 20, true);                // paste with its minimum corner at (20,60,20); true = skip air
+```
+
+Filling, replacing and counting have no size limit, but a huge region on the server thread takes time: split it over several ticks with `runRepeating` if it is big. Only `copy()` is limited (`Region.MAX_BLOCKS`) and throws `IllegalArgumentException` above it.
+
+### HUD: scoreboard, titles, boss bars
+
+Minecraft PE 0.15.10 has no packets for titles, boss bars or scoreboards. BlockNes **emulates** them with the two text channels the client does have: *tip* (the middle of the screen) and *popup* (above the hotbar). Everything you add is removed when your plugin is disabled.
+
+**Scoreboard** (a list of lines):
+
+```java
+hudLine(player, "kills", 1, color("&cKills: &f" + kills));   // key, order, text. Same key = update. text null = remove
+hudLine(player, "tip", color("&7hello"));                    // order 0
+hudLine(player, "timer", 5, color("&eTime: 0:30"), 200);     // disappears by itself after 200 ticks
+
+// A line for EVERY player: the function runs per player every 10 ticks ("" or null = hidden)
+hudLine("online", 0, p -> color("&7Online: &f" + onlineCount()));
+
+hudRemove(player, "kills");   // remove one line
+hudRemove("online");          // remove a global line
+hudClear(player);             // remove all lines and bars of this plugin for that player
+List<String> shown = hudLines(player);                        // what the player sees now
+```
+
+Lines are sorted by `order` (lowest first; with the same order, global lines go before per-player lines, then the order they were added). Keys are per plugin, so two plugins can both use `"timer"`. The server shows at most `hud-max-lines` lines per player (default 15, from 1 to 40; set in `server.properties`).
+
+**Where it is drawn.** The plugin decides, per player:
+
+```java
+hudPosition(player, HudPosition.RIGHT);    // RIGHT (default), LEFT or CENTER
+hudOffsetY(player, 2);                     // move it up (+) or down (-) by that many lines (limit -20..20)
+hudScreenWidth(player, 427);               // screen width in GUI pixels used to push it to a side (default 427; allowed 160..2000)
+hudVisible(player, false);                 // hide/show the scoreboard (titles and the action bar still appear)
+```
+
+The getters `hudPosition(p)`, `hudOffsetY(p)`, `hudScreenWidth(p)` and `isHudVisible(p)` return the current values. There is no `/hud` command: the plugin that draws the scoreboard is in charge of these values.
+
+**Titles, action bar and boss bars:**
+
+```java
+title(player, color("&bRound 1"), "Go!", 60);        // title + subtitle in the middle for 60 ticks (hides the scoreboard meanwhile)
+broadcastTitle("Round 1", "Go!", 60);
+actionBar(player, color("&eHold on"), 40);           // text above the hotbar for 40 ticks (hides boss bars meanwhile)
+broadcastActionBar("text", 40);
+bossBar(player, "dragon", color("&cDragon"), 0.75);  // text + progress bar 0..1; same key = update
+removeBossBar(player, "dragon");
+clearTitle(player);
+String[] now = hudView(player);                      // {popup, tip} as the player sees them
+```
+
+`player.sendTitle(title, subtitle)` and `player.addTitle(title, subtitle, fadeIn, stay, fadeOut)` also exist (PocketMine style).
+
+`Events.PlayerHud` fires for each player every 10 ticks (only if someone listens) with the scoreboard `lines` (editable) and the `popup` text, so other plugins can add or change lines.
+
+### Services: talking to other plugins
+
+A plugin can publish an interface and other plugins can use it.
+
+```java
+// plugin A (Eco): publish
+registerService(Economy.class, this);
+
+// plugin B (Shop): use it. A is listed in `depend` so it is already enabled here.
+Economy eco = service(Economy.class);          // null if nobody published it
+```
+
+Rules:
+
+- Put the shared interface (`Economy`) in plugin A's jar. Plugin B must compile against A's jar and list `depend=Eco` (hard) or `softdepend=Eco` (optional) in its `plugin.properties`. That is also what makes A's classes visible to B at run time.
+- With `softdepend`, A may be missing: check `plugin("Eco") != null` or `service(Economy.class) != null` **before** touching any class of A, otherwise you get `NoClassDefFoundError`.
+- A service is removed when its plugin is disabled.
+- You can also read another plugin directly: `Plugin p = plugin("Eco");`.
+- To use events between plugins, define an `Event` subclass in the shared jar (see [Listening to events](#listening-to-events)).
+
+There is a complete example in [Full example: an economy and a shop](#full-example-an-economy-and-a-shop).
+
+### Text, arguments and cooldowns
+
+**Colors.** Minecraft uses `§` followed by a code. In your code write `&` and convert:
+
+```java
+color("&aGreen &lbold &rreset")     // static: Plugin.color(...) / Text.color(...)
+color("&&")                         // a literal &
+stripColor("§aHello")               // remove the codes
+TextFormat.GOLD + "text"            // constants: net.BlockNes.util.TextFormat (BLACK, DARK_BLUE ... GOLD, GRAY ...)
+```
+
+`color` converts `&` followed by `0-9`, `a-f`, `k-o` or `r`. Players cannot type `§` in chat (the server strips it).
+
+**`Text` helpers** (`net.BlockNes.plugin.Text`, all static):
+
+```java
+Text.bar(0.4, 10, "&a", "&8")      // progress bar of 10 segments, 40% filled
+Text.ticks(1200)                   // "1:00"   (20 ticks = 1 s)
+Text.seconds(3725)                 // "1:02:05"
+Text.number(1234567)               // "1,234,567"
+Text.truncate(text, 16)            // shorten to 16 visible letters adding "..."
+Text.width(text)                   // approximate width in GUI pixels
+```
+
+**`Cooldowns`**: a timer per key (normally the player name). Server thread only.
+
+```java
+private final Cooldowns kit = new Cooldowns();
+
+if (!kit.tryUse(p.name, 60_000)) {                       // true = allowed (and starts the 60 s wait)
+    message(p, "Wait " + kit.remainingSeconds(p.name) + " s");
+    return;
+}
+// also: remaining(key) in ms, isActive(key), reset(key), clear()
+```
+
+**`Args`** was shown in [Commands](#commands).
+
+### Translations
+
+`tr(key, args...)` gives a text in the **server's language** (`eng`, `spa`, `por`, `fra`, `deu`, `ita`; the `language=` value of `server.properties`). Put the files inside your jar:
+
+```
+lang/eng.properties      welcome=Welcome, %s!
+lang/spa.properties      welcome=Bienvenido, %s!
+```
+
+```java
+message(player, tr("welcome", player.name));
+```
+
+If the key is missing in the current language it uses `lang/eng.properties`; if it is missing there too, you get the key itself. The values go through `String.format`. The files are read as UTF-8.
+
+---
+
+## Events
+
+All events live in `net.BlockNes.plugin.Events` (one nested class each) and extend `Event`. Each one also implements the interface with the PocketMine-MP name, in `net.BlockNes.event.*` (`player`, `block`, `entity`, `inventory`, `level`, `server`, `plugin`), so you can listen with either.
+
+How to read the tables:
+
+- **Cancel** = `yes` means `e.setCancelled(true)` stops the action. `no` means it is informational (or already happened) and cancelling does nothing.
+- **Data** lists the public fields. Fields marked *(edit)* can be changed in your handler and the server uses the new value.
+- Every player event has `e.player` (and `e.getPlayer()`).
+- Coordinates `x, y, z` of blocks are integers; for entities and impacts they are `double`. `dimension`/`from`/`to` are `0` (overworld) or `1` (nether).
+- A few events are only created when somebody listens to them, because they would fire very often (`MobMove`, `BlockUpdate`, `PlayerHud`, `ServerTick`).
+
+```java
+on(Events.BlockBreak.class, e -> {
+    if (e.id == 7) e.setCancelled(true);                 // fields
+});
+on(net.BlockNes.event.block.BlockBreakEvent.class, e -> {
+    if (e.getBlockId() == 7) e.setCancelled(true);       // PocketMine-style getters
+});
+```
+
+### Players
+
+| Event | Cancel | Data and notes |
+| --- | --- | --- |
+| `PlayerPreLogin` | yes | Right after the name is validated, before joining. Cancelling kicks with `kickMessage` *(edit)*. Also implements `PlayerHandshakeEvent` and `PlayerAuthenticateEvent` |
+| `PlayerLogin` | yes | The player passed pre-login and is about to enter. Cancelling kicks with `kickMessage` *(edit)* |
+| `PlayerJoin` | no | The player finished joining (already in the world) |
+| `PlayerQuit` | no | The player disconnected |
+| `PlayerKick` | yes | About to be kicked. `reason` *(edit)* |
+| `PlayerChat` | yes | `message` *(edit)*, `format` *(edit; a `String.format` pattern with two arguments: name and text, for example `"<%s> %s"`; `null` = normal)*, `recipients` *(edit; add or remove players)* |
+| `PlayerCommand` | yes | A `/command` typed in chat, before it runs. `line` |
+| `PlayerTextPreSend` | yes | A chat/command text is about to reach a player. `message` *(edit)*. Fired by `message`/`broadcast`; not for tips, popups or titles |
+| `PlayerMove` | yes | Only when the player changes **block**. `fromX/Y/Z`, `toX/Y/Z`. Cancelling puts the player back |
+| `PlayerTeleport` | yes | A `/tp` or `teleportChecked(...)`. `fromX/Y/Z`, `toX/Y/Z` *(edit)*. Internal teleports of the server do not fire it |
+| `PlayerChangeDimension` | no | `from`, `to` |
+| `PlayerInteract` | yes | Right click on a block (`air=false`, with `x, y, z, face`) or in the air (`air=true`). `item` |
+| `PlayerDamage` | yes* | The player is about to be hurt. `amount` *(edit)*, `cause`, `forced`, `attacker` (a `Player` or `null`). *Forced damage (void, fire, hunger, poison...) ignores cancelling. `cause` is the death-message text, in Spanish for built-in causes |
+| `PlayerDamageByMob` | yes | A mob hits a player. `mob`, `damage` *(edit)* |
+| `EntityDamageByChildEntity` | yes | A projectile hits a player. `child` (`ARROW`, `SNOWBALL`...), `shooterPlayer`, `shooterMob`, `damage` *(edit)* |
+| `EntityDamageByBlock` | yes | Lava, fire or cactus hurts a player. `blockId`, `cause`, `damage` *(edit)* |
+| `PlayerDeath` | no | `message` *(edit; `null` = no message)*, `keepInventory` *(edit)* |
+| `PlayerRespawn` | no | The player respawned |
+| `PlayerHeal` | yes | About to regain health. `amount` *(edit)*. (`EntityRegainHealthEvent`) |
+| `PlayerAttack` | yes | A player is about to hit a player or mob. `targetPlayer`, `targetMob`, `targetEntityId`, `weapon`, `damage` *(edit)* |
+| `PlayerGamemode` | yes | `from`, `to` (`0` survival, `1` creative) |
+| `PlayerHungerChange` | no | `from`, `to` (food level) |
+| `PlayerExhaust` | yes | Hunger from tiredness. `amount` *(edit)* |
+| `PlayerExperienceChange` | no | `before`, `after` (total XP) |
+| `PlayerLevelChange` | no | `from`, `to` |
+| `PlayerPickupExpOrb` | yes | `exp` *(edit)*, `x, y, z` |
+| `PlayerAchievementAwarded` | yes | `achievement` (`"mineWood"` or `"diamond"`) |
+| `PlayerToggleSneak` / `PlayerToggleSprint` | yes | `sneaking` / `sprinting` |
+| `PlayerJump` | no | A guess: the player was on the ground and now goes up. The server does not read a jump packet |
+| `PlayerAnimation` | yes | `action` (`1` = arm swing). Cancelling hides it from the others |
+| `PlayerBedEnter` / `PlayerBedLeave` | yes / no | `x, y, z` of the bed |
+| `PlayerLatencyUpdate` | no | `ping`, `previousPing` (checked every second) |
+| `PlayerFish` | yes | A fish is caught. `fish` |
+| `PlayerUseFishingRod` | yes | `action`: `START_FISHING` (0) or `STOP_FISHING` (1) |
+| `PlayerHud` | no | Every 10 ticks per player (only if listened to). `lines` *(edit)*, `popup` *(edit)* |
+| `MenuClick` | yes | A click on a [menu](#menus). `menu`, `slot`, `item`, `proposed` |
+
+### Blocks
+
+| Event | Cancel | Data and notes |
+| --- | --- | --- |
+| `BlockBreak` | yes | `x, y, z, id, meta`. The client is re-synced when cancelled |
+| `BlockPlace` | yes | `x, y, z, id, meta` of the block being placed |
+| `BlockDropItem` | no | Drops of a block that is broken, falls or explodes. `drops` *(edit the list)*, `player` (`null` if not a player), `x, y, z, id` |
+| `BlockBurn` | yes | A flammable block burns. `x, y, z, id` |
+| `BlockForm` | yes | Lava touching water becomes stone (4) or obsidian (49). `id` = the block that will form |
+| `BlockSpread` | yes | Grass/mycelium spreading, fire spreading. `sourceX/Y/Z`, `x, y, z`, `id`, `meta` |
+| `BlockFromTo` | yes | A liquid flows. `sourceX/Y/Z`, `x, y, z`, `liquidId` (8 water, 10 lava), `newMeta` |
+| `BlockGrow` | no | A crop, stem or sapling grows. `x, y, z, id, meta` (before growing) |
+| `LeavesDecay` | yes | `x, y, z, id` |
+| `BlockUpdate` | no | A block checks its neighbours. Only created if listened to. `x, y, z, id` |
+| `BlockRedstone` | no | `x, y, z` |
+| `SignChange` | yes | `x, y, z`, `lines` *(edit; 4 strings)* |
+| `BlockFade` | - | **Never fired yet** (the server has no melting logic) |
+| `EntityBlockChange` | yes | A falling block (sand, gravel, anvil) lands. `x, y, z, fromId, toId, toMeta` |
+
+### Mobs, projectiles and explosions
+
+| Event | Cancel | Data and notes |
+| --- | --- | --- |
+| `MobSpawn` | yes | `mob`, `natural` (`false` = egg or `/summon`) |
+| `MobDamage` | yes | `mob`, `by` (player or `null`), `amount` *(edit)* |
+| `MobDeath` | no | `mob`, `killer`, `drops` *(edit the list)* |
+| `MobDespawn` | no | A mob leaves the world. `mob` |
+| `MobMove` | no | Each tick it moves on x/z. Only created if listened to. `mob`, `fromX`, `fromZ` |
+| `MobTarget` | no | A hostile mob changes target. `mob`, `target` (player or `null`) |
+| `EntityDamageByEntity` | no | A player hit a mob. `mob`, `damager` |
+| `EntityTransform` | - | **Never fired yet** (mobs do not transform) |
+| `EntityCombust` | yes | An entity is about to catch fire. `eid`, `player` (`null` if a mob), `cause`, `seconds` |
+| `EntityCombustByBlock` | yes | Lava or fire sets a player on fire. `blockId`, `seconds` *(edit)* |
+| `EntityCombustByEntity` | yes | A flaming arrow. `combusterPlayer`, `combusterMob`, `seconds` *(edit)* |
+| `EntityEffectAdd` | yes | A player gets an effect. `effect` (`Food.EFFECT_*`), `amplifier`, `duration` (ticks) |
+| `EntityEffectRemove` | yes | An effect ends. `effect`. Cancelling keeps it |
+| `EntityShootBow` | yes | A player releases a bow. `bow`, `force` *(edit, 0..2)*. Cancelling spends neither arrow nor durability |
+| `ProjectileLaunch` | yes | `type` (`ARROW`, `SNOWBALL`, `EGG`, `POTION`, `EXP_BOTTLE`, `FIREBALL`, `SMALL_FIREBALL`), `player`, `mob`, `x, y, z` |
+| `ProjectileHit` | no | `type`, `shooterPlayer`, `shooterMob`, `x, y, z`, `hitPlayer`, `hitMob`, `blockId` (`-1` if none). Fired before the projectile applies its effect |
+| `ExplosionPrime` | yes | A TNT is about to light (chain TNT too). `x, y, z`, `fuse` *(edit, ticks)* |
+| `Explosion` | yes | `dimension`, `x, y, z`, `size`, `blocks` *(edit; each entry is `{x, y, z, id}`; remove entries to save blocks)* |
+| `EntityEatItem` / `EntityDrinkPotion` | yes | `food` / `potion` |
+| `VehicleMount` | yes | A player mounts a boat or minecart. `vehicle` (`"BOAT"`/`"MINECART"`), `vehicleEntityId`, `x, y, z` |
+| `VehicleDismount` | no | `vehicle` |
+| `VehicleDestroy` | yes | A player breaks a boat or minecart. Same fields as `VehicleMount` |
+| `LightningStrike` | no | `x, y, z` |
+| `ItemSpawn` / `ItemDespawn` | no | `entity` (an item on the ground). `ItemDespawn` does not fire when a player picks it up |
+
+### Items and inventories
+
+| Event | Cancel | Data and notes |
+| --- | --- | --- |
+| `ItemPickup` | yes | A player picks an item from the ground. `item`. Also `PlayerPickupItemEvent` and `InventoryPickupItemEvent` |
+| `InventoryPickupArrow` | yes | `item`, `x, y, z` |
+| `PlayerDropItem` | yes | `item`. Cancelling returns it to the inventory |
+| `PlayerItemConsume` | yes | Eating or drinking. `item` |
+| `PlayerItemHeld` | no | `item`, `slot`, `hotbarSlot` |
+| `ItemUse` | no | `item` |
+| `InventoryClick` | no | A slot change sent by the client. `window`, `slot`, `item`. Also `InventoryTransactionEvent` |
+| `InventoryOpen` | yes | `type` (`"chest"`, `"enderchest"`, `"workbench"`, `"furnace"`), `x, y, z` |
+| `InventoryClose` | no | |
+| `ArmorEquip` | no | `slot`, `item` |
+| `EntityArmorChange` | yes | `slot`, `oldItem`, `newItem` *(edit)* |
+| `CraftItem` | yes | `input` (list of items spent), `result` |
+| `SmeltItem` | no | `x, y, z`, `source`, `result` |
+| `FurnaceBurnFuel` | no | `x, y, z`, `fuel` |
+| `PlayerEnchantItem` | no | `before`, `result`, `levelsSpent` |
+| `PlayerBucketFill` | yes | `x, y, z, face`, `liquidId`, `bucket`, `item` *(edit; what the player gets)* |
+| `PlayerBucketEmpty` | yes | Same fields; `item` is the empty bucket they get |
+
+### World and level
+
+| Event | Cancel | Data and notes |
+| --- | --- | --- |
+| `WorldLoad` | no | `world`, `nether`. Fired after plugins load, and when `/spawn <world>` changes the world |
+| `WorldUnload` | no | `world`, `nether`. Start of shutdown, before saving |
+| `LevelSave` | no | The world was saved |
+| `ChunkLoad` / `ChunkUnload` / `ChunkPopulate` | no | `world`, `x`, `z` (chunk coordinates). `ChunkPopulate` = a new chunk finished generating |
+| `TimeChange` | no | `from`, `to`. Only when time is *set* (commands, sleeping), not the normal clock |
+| `WeatherChange` | yes | From `/weather` or `setWeather(...)`; random weather does not fire it. `type` *(edit)*, `ticks` *(edit)* |
+| `ThunderChange` | no | `thundering`, `weather` |
+| `SpawnChange` | no | `level`, `previousX/Y/Z`, `x, y, z` |
+
+### Server, connections and plugins
+
+| Event | Cancel | Data and notes |
+| --- | --- | --- |
+| `ServerStart` | no | Plugins loaded, world ready, just before the first tick |
+| `ServerStop` | no | Start of shutdown, before plugins are disabled |
+| `ServerTick` | no | Every tick (20 per second). `tick`. Keep it very light |
+| `ServerCommand` | yes | A command typed in the console. `sender`, `line` *(edit)* |
+| `RemoteServerCommand` | yes | A command that came by RCON. `line` *(edit)* |
+| `ConnectionAttempt` | no | A session opened, before login. `address` (`ip:port`) |
+| `ConnectionClose` | no | `address`, `reason`. Also for failed logins |
+| `PacketReceive` | yes | A packet from a player. `id`, `data` (`data[0]` = packet id). Also `DataPacketReceiveEvent` / `PacketDecodeEvent` |
+| `PacketSend` | yes | A packet the server will send. `data`. Also `DataPacketSendEvent` / `PacketEncodeEvent` |
+| `QueryRegenerate` | no | Every 5 s, the data that the query protocol shows. `motd`, `players`, `maxPlayers`, `version`, `level` |
+| `LowMemory` | no | Every 5 s if more than 90 % of the maximum memory is used. `memory`, `memoryLimit`, `triggerCount` |
+| `PluginEnable` / `PluginDisable` | no | `plugin`. `PluginDisable` fires just before `onDisable()` |
+
+### PocketMine-MP events completed
+
+These events exist now with their PocketMine-MP names. Listen with the interface in `net.BlockNes.event.*` or with the class in `Events`:
+
+| Event | Fired when | Cancel |
+| --- | --- | --- |
+| `LevelInitEvent` | a world is created for the first time (its folder was not on disk). Overworld and Nether, at startup | no |
+| `LevelLoadEvent` / `LevelUnloadEvent` | same moment as `WorldLoad` / `WorldUnload` | no (BlockNes always unloads) |
+| `FurnaceBurnEvent` | a furnace is about to burn fuel. `burnTime` *(edit)*. Cancelled = no fuel is used | yes |
+| `FurnaceSmeltEvent` | a furnace finishes an item. `result` *(edit)*. Cancelled = the item stays in the furnace | yes |
+| `PlayerCreationEvent` | a new session opens, before the player object is created. `address`, `port`, `clientId` | no |
+| `PlayerGlassBottleEvent` | a player fills a glass bottle from a cauldron (not from water yet) | yes |
+| `EntityEatBlockEvent` | a player eats a cake slice | yes |
+| `EntityLevelChangeEvent` | a player changes world or dimension (`origin`, `target`). Fired before `PlayerChangeDimension` | yes |
+| `EntityMotionEvent` | a push (knockback from mobs, projectiles or explosions) is about to be sent to a player. `getVector()` | yes |
+| `EntityInventoryChangeEvent` | a player's slot is about to change. `newItem` *(edit)* | yes |
+| `BlockEvent`, `ChunkEvent`, `LevelEvent`, `InventoryEvent`, `PlayerBucketEvent`, `ServerEvent`, `EntityCombustEvent` | base types: listen to them to get every event of that family | - |
+
+Not fired yet, because BlockNes has no mechanic for them: `CreeperPowerEvent`, `EntityGenerateEvent`, `ItemFrameDropItemEvent`, `EntityEatEvent`, and `PlayerGlassBottleEvent` when a bottle fills from water.
+
+### Notes about events
+
+- **Order of creation.** Events that need work to build (`MobMove`, `BlockUpdate`, `PlayerHud`, `ServerTick`, `PlayerLatencyUpdate`, `QueryRegenerate`, `LowMemory`) are skipped completely when no plugin listens to them, so listening has a cost: do it only if you need it.
+- **`PlayerEvent` and `EntityEvent`.** `net.BlockNes.event.player.PlayerEvent` has `getPlayer()`. `net.BlockNes.event.entity.EntityEvent` has `getEntity()`, which returns a `Player` or a `Mob` (use `instanceof`). `PluginEvent` has `getPlugin()`.
+- **Several events for one thing.** One action can fire more than one event: a player killing a mob fires `PlayerAttack` (before), `MobDamage` and `EntityDamageByEntity`; a mob hurting a player fires `PlayerDamageByMob` and `PlayerDamage`. Pick the one that has the data you need.
+- **Reading packets.** `PacketReceive.data` and `PacketSend.data` are raw bytes (protocol 84). You can parse them with `raknetlib.BinaryStream`.
+
+---
+
+## API 1.6 additions (inside `Plugin`)
+
+API 1.6 adds a **PocketMine-style facade** so that code written for PocketMine-MP is easy to port. None of it is required: the shorter methods of `Plugin` do the same things. A plugin that uses these classes should declare `api=1.6` or higher.
+
+| Class | Package | What it is |
+| --- | --- | --- |
+| `Server` | `net.BlockNes` | `Server.getInstance()` gives the running server (it is `null` before the server is created) |
+| `Level` | `net.BlockNes.level` | A world as plugins see it |
+| `Position`, `Vector3` | `net.BlockNes.level`, `net.BlockNes.math` | Coordinates (`Position` = `Vector3` + `Level`) |
+| `TextFormat` | `net.BlockNes.util` | Color constants (`TextFormat.GOLD`) |
+| `Listener`, `Cancellable` | `net.BlockNes.event` | Marker interface for listener classes, and the cancel interface |
+| `CommandExecutor`, `CommandMap`, `CommandSender` | `net.BlockNes.command` | Commands, PocketMine style |
+| `ServerScheduler`, `Task`, `PluginTask`, `AsyncTask`, `TaskHandler` | `net.BlockNes.scheduler` | The scheduler |
+| `Metadatable`, `MetadataValue`, `FixedMetadataValue`, `MetadataStore` | `net.BlockNes.metadata` | Metadata on players and levels |
+| `PlayerInventory` | `net.BlockNes.item` | `player.getPlayerInventory()` |
+
+**The `Server` object** (`Server.getInstance()` or `getServer()`):
+
+```java
+Server s = Server.getInstance();
+s.getName();  s.getVersion();  s.getMinecraftVersion();  s.getPort();  s.getMaxPlayers();  s.getViewDistance();
+s.getMotd();  s.getDefaultGamemode();  s.getSpawnRadius();
+s.getOnlinePlayers();  s.getPlayer("ste");  s.getPlayerExact("Steve");
+s.getDefaultLevel();               // the overworld
+s.getLevelByName("world");         // by folder name ("world", "nether"), or null
+s.getLevels();  s.levelOf(1);      // levelOf(dimension)
+s.getPluginManager();  s.getScheduler();  s.getCommandMap();  s.getLogger();
+s.getDataPath();  s.getPluginPath();
+s.isOp("Steve");  s.getWhitelisted();  s.hasWhitelist();  s.getNameBans();  s.getIPBans();
+s.broadcastMessage("text", listOfPlayers);
+s.dispatchCommand(sender, "say hi");  s.getConsoleSender();
+s.shutdown();
+```
+
+**`Level`** is a world: `getName()`, `getDimension()`, `isNether()`, `getBlockIdAt(x,y,z)`, `getBlockDataAt(x,y,z)`, `setBlockAt(x,y,z,id,meta)`, `setBlockIdAt`, `setBlockDataAt`, `getHighestBlockAt(x,z)`, `getSpawnLocation()`, `getTime()`/`setTime(t)`, `stopTime()`/`startTime()`, `setWeather(type, ticks)`, `getPlayers()`, `getMobs()`, `dropItem(Vector3, Item)`, `explode(Vector3, size)`, `addLevelEvent(Vector3, eventId, data)`, `save()`. It is also `Metadatable`. For a player: `player.getLevel()` and `player.getPosition()`.
+
+**`Vector3`** is an immutable vector: `x, y, z`, `getFloorX()`, `add`, `subtract`, `multiply`, `divide`, `floor`, `ceil`, `dot`, `length`, `distance(v)`, `distanceSquared(v)`, `normalize`. `Position` adds `getLevel()`.
+
+**Listeners the PocketMine way.** A class that implements `Listener` and has `@EventHandler` methods, registered with the plugin manager (the plugin's own `registerEvents(obj)` does the same and also works with classes that do not implement `Listener`):
+
+```java
+public class MyPlugin extends PluginBase implements Listener {
+    @Override public void onEnable() {
+        getServer().getPluginManager().registerEvents(this, this);       // (listener, plugin)
+        on(PlayerChatEvent.class, e -> e.setMessage(e.getMessage().toUpperCase()));   // by interface name
+    }
+    @EventHandler public void onJoin(Events.PlayerJoin e) { }
+}
+```
+
+**The scheduler** (`getServer().getScheduler()`):
+
+```java
+ServerScheduler sch = getServer().getScheduler();
+sch.scheduleTask(task);                          // next tick
+sch.scheduleDelayedTask(task, 20);               // after 20 ticks
+sch.scheduleRepeatingTask(task, 20 * 30);        // every 30 s
+sch.scheduleDelayedRepeatingTask(task, 40, 20);  // delay, then period
+sch.scheduleAsyncTask(asyncTask);                // returns the id
+sch.cancelTask(id);  sch.cancelTasks(plugin);  sch.cancelAllTasks();  sch.isQueued(id);
+
+// a task that belongs to the plugin (cancelled for you when it is disabled)
+sch.scheduleRepeatingTask(new PluginTask(this) {
+    @Override public void onRun(long currentTick) { getOwner().getLogger().info("tick " + currentTick); }
+}, 20 * 30);
+```
+
+`net.BlockNes.scheduler.Task` has `onRun(long currentTick)` and an optional `onCancel()`. Methods return a `TaskHandler` (`getTaskId()`, `cancel()`, `isCancelled()`, `isRepeating()`...). `scheduleAsyncTaskToWorker(task, worker)` ignores the worker number. A `PluginTask` cannot be scheduled from a disabled plugin (`IllegalStateException`).
+
+**Metadata.** Attach values to players and levels and remove them with the plugin:
+
+```java
+player.setMetadata("tour.seen", new FixedMetadataValue(this, true));
+player.hasMetadata("tour.seen");  player.getMetadata("tour.seen");  player.removeMetadata("tour.seen", this);
+```
+
+When your plugin is disabled, the metadata it set is removed.
+
+**Items and inventory.** `Item.get(id, damage, count)`, `getId()`, `getDamage()`, `getCount()`, `getCustomName()`, `getEnchantments()`; `player.getPlayerInventory()` with `addItem`, `removeItem`, `setItem`, `getItem`, `getItemInHand`, `contains`, `getContents`, `clear`, `sendContents`.
+
+**Player extras.** `getPing()`, `getIp()`, `getFood()`, `getXpLevel()`, `getXpProgress()`, `hasPermission(node)`, `sendTitle(title, subtitle)`, `addTitle(title, subtitle, fadeIn, stay, fadeOut)`.
+
+**Other PocketMine-named methods** exist on `PluginManager` (`getPlugin`, `getPlugins`, `isPluginEnabled`, `enablePlugin`, `disablePlugin`, `callEvent`, `registerEvents`, `unregisterEvents`, `addPermission`, `removePermission`, `getPermission`, `getPermissions`) and on `CommandMap` (`getCommand`, `getCommands`, `register`, `unregister`, `dispatch`).
+
+---
+
+## API 1.7 additions (inside `Plugin`)
+
+API 1.7 is the current version (`api=1.7`). Plugins built for older versions keep working.
+
+- **New events.** The events added with API 1.7 (BlockNes 1.2.0 and the releases just before it) are part of it, for example `ProjectileHit`, `PlayerBucketFill`, `PlayerBucketEmpty`, `PlayerPickupExpOrb`, `PlayerLogin`, `PlayerUseFishingRod`, `ItemSpawn`, `ItemDespawn`, `RemoteServerCommand`, `PlayerDamageByMob`, `EntityDamageByChildEntity`, `EntityDamageByBlock`, `EntityCombustByBlock`, `EntityCombustByEntity`, `EntityEffectAdd`, `EntityEffectRemove`, `InventoryPickupArrow`, `EntityArmorChange`, `EntityEatItem`, `EntityDrinkPotion`, `EntityBlockChange`, `SpawnChange`, `LowMemory` and `QueryRegenerate`, plus the cancellable `PlayerAttack`, `VehicleMount` and `VehicleDestroy`, and `ServerStart`, `ServerStop`, `ConnectionAttempt`, `ConnectionClose`, `WorldLoad`, `WorldUnload`, `TimeChange`, `MobDespawn` and `SmeltItem`. See [Events](#events).
+- **`Plugin.tr(key, args...)`**: translate your own messages with `lang/<code>.properties` inside the jar (see [Translations](#translations)).
+- **Listening by interface name** (`on(PlayerChatEvent.class, ...)`) is counted as part of 1.7, so a plugin that relies on it should say `api=1.7`.
+- **Plugin-controlled scoreboard**: the plugin that draws it decides the corner (`hudPosition`), the vertical offset (`hudOffsetY`) and the width (`hudScreenWidth`, 427 by default). The new getters `hudOffsetY(p)` and `hudScreenWidth(p)` return the current values. The `/hud` command and the `hud-position`, `hud-offset-y` and `hud-screen-width` settings of `server.properties` are gone. `hud-max-lines` is still a server setting.
+- **Package rename**: `raknetlib` replaces `net.BlockNes.raknet` in plugin imports.
+
+---
+
+## Limits, errors and performance
+
+**Errors never stop the server.** If a handler, command, task or callback throws, the error is logged with the plugin's name and the stack trace; the other handlers keep running. For a command, the sender is told that an error happened.
+
+**Optional limits.** By default there are no limits (like PocketMine-MP). The server owner can turn them on in `server.properties`:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `plugin-max-errors` | `0` | Errors in handlers before the plugin is disabled. `0` = no limit |
+| `plugin-max-slow-calls` | `0` | Handler calls slower than 100 ms before the plugin is disabled. `0` = no limit |
+| `plugin-max-tasks` | `0` | Pending tasks per plugin. More of them throw `IllegalStateException`. `0` = no limit |
+| `hud-max-lines` | `15` | Scoreboard lines per player (1 to 40) |
+
+Even with no limit, a plugin that has 100 slow calls (more than 100 ms each) gets one warning in the log.
+
+**Performance tips**
+
+- Everything runs on the server thread: a slow handler makes **the whole server lag**. A tick has 50 ms.
+- Do HTTP, file and database work with `runAsync` and come back with `runSync` or the `done` callback.
+- `PlayerMove` fires whenever a player changes block, and `ServerTick` fires 20 times a second. Do the cheap check first and return early.
+- Do not hold a `Player` object after the player leaves; look players up by name when you need them.
+- Big `Region` operations touch every block: split them over several ticks.
+
+---
+
+## Full example: an economy and a shop
+
+Two plugins that talk to each other through a **service**. This is real, tested code.
+
+**Plugin 1: `Eco`** publishes an `Economy` API.
+
+`plugin.properties`:
+
+```properties
+name=Eco
+main=eco.EcoPlugin
+version=1.0
+api=1.7
+```
+
+`eco/Economy.java` (the shared interface, in Eco's jar):
+
+```java
+package eco;
+
+/** The API other plugins use. Put it in your jar; dependents compile against it. */
+public interface Economy {
+    int balance(String player);
+    void add(String player, int amount);
+    boolean take(String player, int amount);
+}
+```
+
+`eco/EcoPlugin.java`:
+
+```java
+package eco;
+
+import net.BlockNes.plugin.JsonConfig;
+import net.BlockNes.plugin.Plugin;
+
+public class EcoPlugin extends Plugin implements Economy {
+    private JsonConfig data;
+
+    @Override
+    public void onEnable() {
+        data = jsonConfig("balances.json");
+        registerService(Economy.class, this);      // publish the API
+        command("money", "Show your money", "", false, (s, a) -> s.send("Money: " + balance(s.name())));
+    }
+
+    @Override public void onDisable() { data.save(); }
+
+    @Override public int balance(String p) { return data.getInt("balances." + p.toLowerCase(), 0); }
+    @Override public void add(String p, int n) { data.set("balances." + p.toLowerCase(), balance(p) + n).save(); }
+    @Override public boolean take(String p, int n) {
+        if (balance(p) < n) return false;
+        data.set("balances." + p.toLowerCase(), balance(p) - n).save();
+        return true;
+    }
+}
+```
+
+**Plugin 2: `Shop`** uses it. It needs `Eco`, so it says `depend=Eco` and is compiled with Eco's jar on the class path.
+
+`plugin.properties`:
+
+```properties
+name=Shop
+main=shop.ShopPlugin
+version=1.0
+depend=Eco
+api=1.7
+```
+
+`shop/ShopPlugin.java`:
+
+```java
+package shop;
+
+import eco.Economy;
+import net.BlockNes.item.Item;
+import net.BlockNes.plugin.Plugin;
+
+public class ShopPlugin extends Plugin {
+    @Override
+    public void onEnable() {
+        // Eco is a hard dependency, so it is already enabled here.
+        Economy eco = service(Economy.class);
+        command("buybread", "Buy bread for 5 coins", "", false, (s, a) -> {
+            if (!s.isPlayer()) { s.send("Players only"); return; }
+            if (!eco.take(s.name(), 5)) { s.send("Not enough money"); return; }
+            give(playerExact(s.name()), Item.get(297, 0, 1));
+            s.send("Bought 1 bread");
+        });
+    }
+}
+```
+
+Compile Eco first, then Shop with `-cp server-plugin-api.jar:Eco.jar` (use `;` instead of `:` on Windows). Put both jars in `plugins/`. The server loads Eco first (because of `depend`). `/plugins disable Eco` also disables Shop.
+
+**A bigger "tour"** that uses many features at once (config, `@EventHandler`, a custom event, permissions, a cooldown, a menu, recipes, per-player data, countdowns, async and the HUD) is a good starting point for your own plugin:
+
+```java
+package ejemplo;
+
+import net.BlockNes.Player;
+import net.BlockNes.command.CommandSender;
+import net.BlockNes.item.Item;
+import net.BlockNes.plugin.*;
+
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+
+public class Tour extends Plugin {
+    private final Cooldowns kitCooldown = new Cooldowns();
+
+    /** A custom event other plugins can listen to. */
+    public static class ArenaJoinEvent extends Event {
+        public final Player player;
+        public ArenaJoinEvent(Player p) { player = p; }
+    }
+
+    /** @EventHandler style (PocketMine/Bukkit). */
+    public class Guard {
+        @EventHandler(priority = Priority.HIGH, ignoreCancelled = true)
+        public void onBreak(Events.BlockBreak e) {
+            if (e.id == 7) {                         // bedrock
+                e.setCancelled(true);
+                message(e.player, color("&cYou cannot break bedrock"));
+            }
+        }
+    }
+
+    @Override
+    public void onEnable() {
+        // ---- config.properties ----
+        Config cfg = config();
+        cfg.setDefault("welcome", "&aWelcome, %s!").setDefault("kit-seconds", 60).save();
+
+        // ---- events ----
+        on(Events.PlayerJoin.class, e -> message(e.player, color(String.format(cfg.getString("welcome", "Hi %s"), e.player.name))));
+        on(Events.PlayerChat.class, Priority.HIGH, true, e -> e.message = e.message.replace("badword", "***"));
+        on(Events.PlayerDamage.class, e -> { if (!e.forced) e.setCancelled(true); });   // forced damage (void, fire...) cannot be cancelled
+        once(Events.PlayerQuit.class, e -> log("First quit seen: " + e.player.name));
+        registerEvents(new Guard());
+        on(ArenaJoinEvent.class, e -> broadcast(color("&6" + e.player.name + " entered the arena")));
+
+        // ---- permissions ----
+        registerPermission("tour.kit", "Use /kit", PermissionDefault.TRUE);
+        registerPermission("tour.admin", "Use /give2", PermissionDefault.OP);
+
+        // ---- commands (lambda) ----
+        command("kit", "Get a starter kit", "", "tour.kit", (sender, args) -> {
+            Player p = playerExact(sender.name());
+            if (p == null) { sender.send("Players only"); return; }
+            if (!kitCooldown.tryUse(p.name, cfg.getInt("kit-seconds", 60) * 1000L)) {
+                sender.send("Wait " + kitCooldown.remainingSeconds(p.name) + "s");
+                return;
+            }
+            give(p, Item.get(297, 0, 8));
+            p.getPlayerInventory().addItem(Item.get(272, 0, 1).withName(color("&6Starter Sword")));
+            sender.send("Kit given");
+        });
+
+        // ---- commands (CommandExecutor, PocketMine style) ----
+        command("give2", "Give items", "<player> [count]", "tour.admin", (sender, cmd, label, args) -> {
+            if (args.length < 1) return false;                // false = print the usage
+            Player target = player(args[0]);
+            if (target == null) { sender.send("Player not found"); return true; }
+            int n = Args.getInt(args, 1, 1, 1, 64);
+            give(target, Item.get(264, 0, n));
+            sender.send("Gave " + n + " diamonds to " + target.name);
+            return true;
+        });
+
+        // ---- commands (class) ----
+        registerCommand(new Command("arena", "Join the arena", "", "a") {
+            @Override public boolean execute(CommandSender s, String label, String[] args) {
+                Player p = playerExact(s.name());
+                if (p == null) return false;
+                fire(new ArenaJoinEvent(p));
+                return true;
+            }
+        });
+        alias("kit", "starter");
+
+        // ---- per-player data ----
+        command("stats", "Show your stats", "", false, (s, a) -> {
+            JsonConfig d = playerData().of(s.name());
+            d.set("stats.commands", d.getInt("stats.commands", 0) + 1);
+            s.send("Commands run: " + d.getInt("stats.commands", 0));
+        });
+
+        // ---- menu ----
+        command("shopmenu", "Open a menu", "", false, (s, a) -> {
+            Player p = playerExact(s.name());
+            if (p == null) return;
+            Menu m = menu(3);
+            m.border(Item.get(160, 7, 1).withName(" "));
+            m.setItem(13, Item.get(297, 0, 1).withName("Bread"), click -> {
+                give(click.player, Item.get(297, 0, 1));
+                closeMenu(click.player);
+            });
+            m.onClose(pl -> message(pl, "Menu closed"));
+            openMenu(p, m);
+        });
+
+        // ---- recipes ----
+        Map<Character, Item> ing = new HashMap<>();
+        ing.put('D', Item.get(264));
+        ing.put('S', Item.get(280));
+        addShapedRecipe(Item.get(278), new String[]{"DDD", " S ", " S "}, ing);
+        addShapelessRecipe(Item.get(297, 0, 2), Arrays.asList(Item.get(296), Item.get(296)));
+
+        // ---- tasks ----
+        runRepeating(0, 20 * 60, () -> broadcast("One minute passed"));
+        command("countdown", "Start a countdown", "", true, (s, a) ->
+            countdown(5, n -> broadcast("Starting in " + n), () -> broadcast("Go!")));
+        command("slow", "Async example", "", false, (s, a) ->
+            runAsync(() -> { try { Thread.sleep(500); } catch (InterruptedException ignored) { } return 42; },
+                     result -> s.send("Async result: " + result)));
+
+        // ---- HUD ----
+        hudLine("online", 0, p -> color("&7Online: &f" + onlineCount()));
+        on(Events.PlayerJoin.class, e -> { hudPosition(e.player, HudPosition.RIGHT); hudOffsetY(e.player, 2); });
+    }
+
+    @Override
+    public void onDisable() {
+        log("bye");
+    }
+}
+```
+
+---
+
+## Things to know (limitations)
+
+- **Client version.** The server speaks Minecraft PE **0.15.10**. Block and item ids are those of that version. The client has no title, boss bar or scoreboard packets, so the [HUD](#hud-scoreboard-titles-boss-bars) is emulated with text channels, and menus show no title.
+- **`BlockFade` and `EntityTransform`** exist as classes but are **never fired** yet.
+- **`PlayerMove`** fires only when the player changes block. **`PlayerJump`** is a guess from the position.
+- **`PlayerTeleport`** is fired by `/tp` and `teleportChecked(...)` only. `teleport(...)` and the server's own teleports (portals, respawn) do not fire it.
+- **`WeatherChange`** is not fired by random weather, only by `/weather` and `setWeather(...)`. **`TimeChange`** is not fired by the normal clock.
+- **Death causes** (`PlayerDamage.cause`) are text in Spanish for the server's own causes; there is no cause enum.
+- **Chat.** Players cannot send `§` color codes: the server removes them from their messages.
+- **Worlds.** There are two dimensions (`0` overworld and `1` nether). `/spawn <world>` can change which folder is the overworld; plugins get `WorldUnload` for the old one and `WorldLoad` for the new one.
+- **Reloading.** `/plugins reload` creates new class loaders; static state of the old plugin is lost.
+- **Threads.** Only the server thread may touch players, the world, menus or tasks. Inside `runAsync(...)` and `AsyncTask.onRun()` use only your own plain Java objects.
+
+---
+
+## Troubleshooting
+
+| Problem | What to check |
 | --- | --- |
-| `CommandMap` | The command registry. `getCommandMap()`: list, find, register and remove commands. |
-| `CommandExecutor` | Interface of the lambda in `command(name, description, usage, permission, (sender, command, label, args) -> ...)`. Return `false` to show the usage line. |
-| `CommandSender` | Whoever runs a command: `name()`, `isOp()`, `send(String)`. |
-| `Commands.Sender` | The `sender` type in the `command(...)` lambdas that use `PluginCommand`. It extends `CommandSender`. |
-| `ConsoleCommandSender` | The console as a sender. `getConsoleSender()`. It is always an operator. |
+| A source plugin (folder or `.java`) does not load | `needs a JDK` in the console: the server runs on a JRE, start it with a JDK. `has compile errors`: the console lists file, line and message. Nothing at all: the folder has no `plugin.properties`, or its name starts with a dot |
+| The jar is ignored and the console says the jar has no `plugin.properties` | The file must be at the **root** of the jar, not inside a folder. Check with `jar tf MyPlugin.jar` |
+| "needs name and main" | `name` and `main` are both required in `plugin.properties` |
+| The name is rejected | Only letters, digits, `_` and `-` are allowed in `name` |
+| "api ... newer than the server" | The plugin asks for an API newer than `1.7`. Lower `api=` or update the server |
+| `ClassNotFoundException` for your main class | `main=` must be the full class name (`package.Class`) and the class must be in the jar |
+| The class is found but the plugin does not start | The main class must extend `Plugin` (or `PluginBase`) and have a public no-argument constructor |
+| The plugin is not loaded because of its dependencies | The plugins in `depend` are missing, or failed to load. Check the log above it |
+| `NoClassDefFoundError` for a class of another plugin | Add that plugin to `depend` or `softdepend`, and do not use its classes when it is not installed |
+| `NoClassDefFoundError` for a server class (`net/BlockNes/...`) | You bundled an old copy of the API, or compiled against a different version. Compile against the `server-plugin-api.jar` of your server and do not include it in your jar |
+| `package net.BlockNes.raknet does not exist` | Change the import to `raknetlib` |
+| A command does nothing | Registering is done in code (`command(...)`). The `commands.x.*` lines in `plugin.properties` are only defaults. The log warns about declared commands that were never registered |
+| "You do not have permission" for a command | OPs always pass. Others need the node granted: in `plugins/permissions.properties`, by an attachment, or with a registered `PermissionDefault.TRUE` |
+| Your handler runs but nothing changes | The event may be informational (see the **Cancel** column), or a handler with higher priority already changed it. Use `MONITOR` to see the final state |
+| Config is empty and the log warns about `config.properties` | Put a `config.properties` at the root of your jar |
+| The server lags | A handler or task is slow. The log warns after 100 calls slower than 100 ms. Move slow work to `runAsync` |
+| An async callback never runs | The plugin was disabled before the work finished, or the work threw an exception (check the log) |
+| The scoreboard is on the wrong side | The plugin decides: `hudPosition(player, ...)`, `hudScreenWidth(player, ...)` and `hudOffsetY(player, ...)` |
 
-#### net.BlockNes.level, math, item, metadata, mob, util and network.protocolo
+---
 
-| Class | What it is |
-| --- | --- |
-| `net.BlockNes.level.Level` | A world. One per dimension (0 overworld, 1 nether): `getLevelByName(...)`, `getDefaultLevel()`, `player.getLevel()`. |
-| `net.BlockNes.level.Position` | A `Vector3` with its `Level`: `getLevel()`. |
-| `net.BlockNes.level.Weather` | Weather constants for `setWeather`: `SUNNY`, `RAINY`, `RAINY_THUNDER`, `THUNDER`. |
-| `net.BlockNes.math.Vector3` | Immutable point or vector. |
-| `net.BlockNes.item.Item` | Immutable item stack: `Item.get(id, damage, count)`, `withName`, `withLore`, `withCount`. |
-| `net.BlockNes.item.PlayerInventory` | The player's inventory, which updates the client. `player.getPlayerInventory()`. |
-| `net.BlockNes.item.Inventory` | The raw inventory from `player.getInventory()`: 36 slots and 4 armor slots. It does not update the client, so prefer `PlayerInventory`. |
-| `net.BlockNes.item.Enchantments` | Enchantment ids as constants, from `PROTECTION` (0) to `FISHING_LURE` (24). `COUNT` is 25 and `ENCHANTED_BOOK` is 403. |
-| `net.BlockNes.item.Recipes` | The recipe list, `server().recipes`, with `all`. `Recipes.Recipe` is one recipe: the type that `removeRecipe` takes. |
-| `net.BlockNes.mob.Mob` | Mob ids as constants, for `spawnMob`, such as `Mob.ZOMBIE` and `Mob.COW`. The full list is below. |
-| `net.BlockNes.metadata.Metadatable` | Interface of objects that can hold plugin metadata: players and levels. |
-| `net.BlockNes.metadata.MetadataValue` | A metadata value: `value()`, `asInt()`, `asLong()`, `asDouble()`, `asString()`, `asBoolean()`. |
-| `net.BlockNes.metadata.FixedMetadataValue` | A `MetadataValue` with a fixed value: `new FixedMetadataValue(plugin, value)`. |
-| `net.BlockNes.util.TextFormat` | Color and style codes: `TextFormat.RED`, `TextFormat.BOLD`, `TextFormat.RESET`. `TextFormat.clean(text)` removes them. |
-| `net.BlockNes.network.protocolo.Info` | Packet ids, such as `Info.LOGIN` or `Info.MOVE_PLAYER`, and `Info.VERSION` (84). Use them with `PacketReceive`, `PacketSend` and `server().send(...)`. |
-
-`Mob` ids: CHICKEN 10, COW 11, PIG 12, SHEEP 13, WOLF 14, VILLAGER 15, MOOSHROOM 16, SQUID 17, RABBIT 18, BAT 19, IRON_GOLEM 20, SNOW_GOLEM 21, OCELOT 22, ZOMBIE 32, CREEPER 33, SKELETON 34, SPIDER 35, PIG_ZOMBIE 36, SLIME 37, ENDERMAN 38, SILVERFISH 39, CAVE_SPIDER 40, GHAST 41, LAVA_SLIME 42, BLAZE 43, ZOMBIE_VILLAGER 44, WITCH 45, STRAY 46, HUSK 47.
-
-### Internal classes
-
-These classes are in the jar because the server is built from them. Plugins should use the API helper in the last column of the table instead of calling them directly.
-
-<details>
-<summary>Internal classes (140)</summary>
-
-| Class | Package | What it does | Use instead |
-| --- | --- | --- | --- |
-| `Achievements` | `net.BlockNes` | Achievement rules (`mineWood`, `diamond`), each given once per player | Event `PlayerAchievementAwarded` |
-| `AccessLists` | `net.BlockNes` | Ban and white-list files | `banPlayer`, `banIp`, `whitelistAdd`... |
-| `Setup` | `net.BlockNes` | First-run wizard that picks the language | Nothing |
-| `Operators` | `net.BlockNes.admin` | Operator list (`ops.txt`) | `isOp`, `setOp`, `getOps` |
-| `ServerSettings` | `net.BlockNes.admin` | Values of `server.properties` | `getConfigString`, `getConfigInt`, `getConfigBoolean` |
-| `Messenger` | `net.BlockNes.chat` | Chat messages, tips and popups | `message`, `broadcast`, `tip`, `popup` |
-| `Commands` | `net.BlockNes.command` | Runs commands from the console and the chat | `Commands.Sender` is API (see above) |
-| `Console` | `net.BlockNes.command` | Reads commands from the terminal | Nothing |
-| `RecipeBook` | `net.BlockNes.craft` | Adds, removes and sends recipes to the clients | `addShapedRecipe`, `addShapelessRecipe`, `removeRecipe` |
-| `Json` | `net.BlockNes.datos` | Minimal JSON parser used by `JsonConfig` | `jsonConfig(...)` |
-| `PlayerData` | `net.BlockNes.datos` | Saves player data | `playerData()` |
-| `Resources` | `net.BlockNes.datos` | Data files inside the jar (`recipes.json`, `creativeitems.json`) | Nothing |
-| `ServerProperties` | `net.BlockNes.datos` | Reads `server.properties`, creates it if missing and adds missing keys | `getConfigString`, `getConfigInt`, `getConfigBoolean` |
-| `Lang` | `net.BlockNes.lang` | Server languages for the terminal and player messages | Nothing |
-| `MenuManager` | `net.BlockNes.menu` | Opens, closes and fills menus | `menu`, `openMenu`, `closeMenu` |
-| `Nbt` | `net.BlockNes.nbt` | Minimal little-endian NBT for block entities and client data | Nothing |
-| `Hud` | `net.BlockNes.plugin` | Scoreboard and title emulation | `hudLine`, `title`, `bossBar`... |
-| `Permissions` | `net.BlockNes.plugin` | Reads `plugins/permissions.properties` | `hasPermission` |
-| `Banner` | `net.BlockNes.util` | Startup banner | Nothing |
-| `Log` | `net.BlockNes.util` | Console log in PocketMine-MP format, also saved to `server.log` | `getLogger()` |
-| `PassProgress` | `net.BlockNes.util` | Progress lines during startup ("Preparing spawn area") | Nothing |
-| `Chunk` | `net.BlockNes.level` | A 16 x 128 x 16 column of blocks | Nothing |
-| `Experience` | `net.BlockNes.level` | XP needed per level, and XP from blocks and mobs | `giveXp` |
-| `FlatWorld` | `net.BlockNes.level` | Flat world generator | Nothing |
-| `Light` | `net.BlockNes.level` | Block light and sky light of a chunk | Nothing |
-| `NetherPortal` | `net.BlockNes.level` | Nether portal frame rules | Nothing |
-| `NetherWorld` | `net.BlockNes.level` | Nether terrain generator | Nothing |
-| `NormalWorld` | `net.BlockNes.level` | Normal terrain generator | Nothing |
-| `World` | `net.BlockNes.level` | The editable world behind `Level`: chunks in memory, saved to disk when modified | `Level` |
-| `WorldGenerator` | `net.BlockNes.level` | Interface for world generators | Nothing |
-| `WorldLayout` | `net.BlockNes.level` | World folders (`worlds/world`, `worlds/nether`) | Nothing |
-| `XpOrbs` | `net.BlockNes.level` | Experience orbs | Nothing |
-| `Armor` | `net.BlockNes.item` | Armor rules and damage reduction, ported from PocketMine-MP | Nothing |
-| `CreativeItems` | `net.BlockNes.item` | Creative inventory list (`creativeitems.json`) | Nothing |
-| `EnchantTable` | `net.BlockNes.item` | Enchanting table: bookshelves, levels and options | Nothing |
-| `EnchantTableData` | `net.BlockNes.item` | Generated enchanting tables, not edited by hand | Nothing |
-| `Food` | `net.BlockNes.item` | Food rules: hunger, saturation and effects | Nothing |
-| `ItemEntities` | `net.BlockNes.item` | Items on the ground: spawn, physics, pickup and despawn | Events `ItemPickup`, `PlayerDropItem` |
-| `ItemEntity` | `net.BlockNes.item` | One item lying on the ground | Nothing |
-| `Potions` | `net.BlockNes.item` | Potion table: effects, durations and colors | Nothing |
-| `BedLogic` | `net.BlockNes.block` | Bed rules: place, activate and break | Nothing |
-| `BlockLogic` | `net.BlockNes.block` | Scheduled and random block updates: liquids, leaves, grass, mycelium | Nothing |
-| `Blocks` | `net.BlockNes.block` | Basic block rules: transparency, replaceable blocks, collision, placement metadata | Nothing |
-| `ChestTile` | `net.BlockNes.block` | Chest of 27 slots; two chests side by side form a 54-slot double chest | Nothing |
-| `Drops` | `net.BlockNes.block` | What each block drops and which tool it needs | Event `BlockDropItem` |
-| `EnchantTile` | `net.BlockNes.block` | Enchanting table block entity, which the client needs to open the table | Nothing |
-| `EnderChests` | `net.BlockNes.block` | Ender chest contents: one 27-slot inventory per player | Nothing |
-| `FlowerPotTile` | `net.BlockNes.block` | Flower pot contents | Nothing |
-| `FurnaceTile` | `net.BlockNes.block` | Furnace: 3 slots, burn and cook times | Events `SmeltItem`, `FurnaceBurnFuel` |
-| `Interactions` | `net.BlockNes.block` | Breaking, placing and activating blocks | Events `BlockBreak`, `BlockPlace`, `PlayerInteract` |
-| `PmBlockData` | `net.BlockNes.block` | Generated tables: light emission, light filter, solid and transparent | Nothing |
-| `PmBlockStats` | `net.BlockNes.block` | Generated hardness and blast resistance | Nothing |
-| `Rails` | `net.BlockNes.block` | Rail shapes and connections | Nothing |
-| `Redstone` | `net.BlockNes.block` | Redstone and mechanisms: levers, buttons, pressure plates, wire, repeaters, lamps, TNT, doors | Event `BlockRedstone` |
-| `SignTile` | `net.BlockNes.block` | Sign: 4 lines of text and who placed it | Event `SignChange` |
-| `SkullTile` | `net.BlockNes.block` | Heads: skeleton, wither skeleton, zombie, player and creeper | Nothing |
-| `Tile` | `net.BlockNes.block` | Base of the block entities (chests, signs...) | Nothing |
-| `Mobs` | `net.BlockNes.mob` | Mob manager: natural spawns, despawns and the life cycle of mobs | `spawnMob`, `mobsIn`, `mobsNear` |
-| `HostileAI` | `net.BlockNes.mob.ai` | Hostile mobs: zombies, skeletons, creepers, spiders, endermen, witches | Nothing |
-| `MobAI` | `net.BlockNes.mob.ai` | Behaviour of each mob type | Nothing |
-| `PassiveAI` | `net.BlockNes.mob.ai` | Passive mobs: animals, villagers, golems, squids, bats | Nothing |
-| `Paintings` | `net.BlockNes.mob.decor` | Paintings that fit on a wall | Nothing |
-| `Hooks` | `net.BlockNes.mob.projectiles` | Fishing hook | Event `PlayerFish` |
-| `Projectiles` | `net.BlockNes.mob.projectiles` | Snowballs, eggs, arrows, thrown potions and experience bottles | Event `ProjectileLaunch` |
-| `Boats` | `net.BlockNes.mob.vehicles` | Boats | Events `VehicleMount`, `VehicleDestroy` |
-| `Dismount` | `net.BlockNes.mob.vehicles` | Where a player lands when getting off a boat or a minecart | Event `VehicleDismount` |
-| `Minecarts` | `net.BlockNes.mob.vehicles` | Minecarts on rails | Events `VehicleMount`, `VehicleDestroy` |
-| `MetadataStore` | `net.BlockNes.metadata` | Stores the metadata of players and levels | `setMetadata`, `getMetadata` |
-| `PortalManager` | `net.BlockNes.world` | Nether portals and dimension changes | Events `PlayerChangeDimension` |
-| `TimeAndWeather` | `net.BlockNes.world` | Time of day, weather, storms and lightning | `setTime`, `setWeather` |
-| `WorldEditor` | `net.BlockNes.world` | Block changes, level events, explosions, mobs and entities | `setBlock`, `explode`, `playLevelEvent` |
-| `ChunkStreamer` | `net.BlockNes.players` | Sends chunks to each player by position and view radius | Nothing |
-| `JoinHandler` | `net.BlockNes.players` | Joining: login, creation and spawn | Events `PlayerPreLogin`, `PlayerJoin` |
-| `LoginParser` | `net.BlockNes.players` | Validates names and reads the UUID and the JWT | Nothing |
-| `PlayerThread` | `net.BlockNes.players` | The thread of each player, where its packets run | Nothing |
-| `PlayerVisibility` | `net.BlockNes.players` | Who sees whom: spawning and despawning players | Nothing |
-| `Query` | `net.BlockNes.network.query` | GS4 query on the game's UDP port (`enable-query`) | `server.properties` |
-| `Rcon` | `net.BlockNes.network.rcon` | Remote console over TCP (`enable-rcon`) | `server.properties` |
-| `UPnP` | `net.BlockNes.network.upnp` | Opens the port on the router (`network.upnp-forwarding`) | `server.properties` |
-| `ActionHandler` | `net.BlockNes.network.handlers` | Animations, entity events and the held item | Nothing |
-| `BlockHandler` | `net.BlockNes.network.handlers` | Breaking blocks, using items and interacting | Nothing |
-| `ChatHandler` | `net.BlockNes.network.handlers` | Chat messages from players | Event `PlayerChat` |
-| `CraftingHandler` | `net.BlockNes.network.handlers` | The crafting packet from the client | Event `CraftItem` |
-| `InventoryHandler` | `net.BlockNes.network.handlers` | Slot changes and dropping items | Events `InventoryClick`, `PlayerDropItem` |
-| `LoginHandler` | `net.BlockNes.network.handlers` | Reads the login packet (name, UUID, JWT) | Nothing |
-| `MovementHandler` | `net.BlockNes.network.handlers` | Movement and chunk radius requests | Event `PlayerMove` |
-| `PacketRouter` | `net.BlockNes.network.handlers` | Receives RakNet packets and sends each one to its handler | Events `PacketReceive`, `PacketSend` |
-
-The rest of `net.BlockNes.network.protocolo` (53 classes, internal) is the packet encoding for protocol 84. `Metadatos` builds entity metadata and `Paquete` is the base class of every packet. The packet classes are:
-
-AddEntityPacket, AddItemEntityPacket, AddPaintingPacket, AddPlayerPacket, AdventureSettingsPacket, AnimatePacket, BlockEntityDataPacket, BlockEventPacket, ChangeDimensionPacket, ChunkRadiusUpdatedPacket, ContainerClosePacket, ContainerOpenPacket, ContainerSetContentPacket, ContainerSetDataPacket, ContainerSetSlotPacket, DisconnectPacket, DropItemPacket, EntityEventPacket, ExplodePacket, FullChunkDataPacket, HurtArmorPacket, InteractPacket, ItemFrameDropItemPacket, LevelEventPacket, MobArmorEquipmentPacket, MobEffectPacket, MobEquipmentPacket, MoveEntityPacket, MovePlayerPacket, PlayStatusPacket, PlayerActionPacket, PlayerInputPacket, PlayerListPacket, RemoveBlockPacket, RemoveEntityPacket, RequestChunkRadiusPacket, RespawnPacket, SetDifficultyPacket, SetEntityDataPacket, SetEntityLinkPacket, SetEntityMotionPacket, SetHealthPacket, SetPlayerGameTypePacket, SetSpawnPositionPacket, SetTimePacket, StartGamePacket, TakeItemEntityPacket, TextPacket, UpdateAttributesPacket, UpdateBlockPacket, UseItemPacket.
-
-</details>
+*This guide describes API 1.7 of BlockNes 1.2.0. The classes mentioned live in `server/src/main/java/net/BlockNes/plugin/` (`Plugin`, `Events`, `PluginManager`...), `event/`, `scheduler/`, `command/` and `level/`; read them for the exact signatures.*

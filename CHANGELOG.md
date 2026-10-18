@@ -1,6 +1,127 @@
+## Unique UUID per player
+
+- Each connected player has their own UUID. Before, if two clients sent the same `identity` (or all zeros), they shared a UUID: the player list and the signs got mixed up.
+- Order: the client's UUID is used if it is valid, is not all zeros and no other connected player is using it; otherwise, the UUID derived from the name (the same as before); and if that one is taken too, a random one.
+- `getUniqueId()` no longer says "or null". Anyone who changes UUID when joining will not be able to edit the signs they placed with the previous one.
+
+## Code structure: IPlayer and BlockNes.java
+
+- `IPlayer.java` (new): the player API for plugins (the " style API (API 1.6)" and "API for plugins" sections) is now declared in an interface. `Player` implements it; no signature changed.
+- `Main.java`, `AccessLists.java`, `Achievements.java` and `Setup.java` are merged into `BlockNes.java`. The startup class is `net.BlockNes.BlockNes` (it was `net.BlockNes.Main`), and `AccessLists`, `Achievements` and `Setup` are nested classes.
+- Change for plugins: `net.BlockNes.AccessLists` becomes `net.BlockNes.BlockNes.AccessLists`, and `net.BlockNes.Achievements` becomes `net.BlockNes.BlockNes.Achievements`. If a plugin used those classes directly, its import has to change. `server-plugin-api.jar` no longer includes the startup class.
+
+## Console: UUID of each player
+
+- When a player joins, the console shows their UUID the way Minecraft Java does: `UUID of player <name> is <uuid>`, right before the join line and in the same color as that line. The message comes in the server's six languages (key `player.uuid` in `Lang`).
+
+## Console: log colors
+
+- The time and the INFO text (from the server and from plugins) are cyan, like the time.
+- `[Server thread/INFO]` goes back to bold white; the color goes on the text.
+- The `[Name]` prefix of plugins is cyan at every level. WARNING, ERROR and DEBUG keep their color on the text.
+- With `NO_COLOR` or `-Dblocknes.color=false` the console is plain text, and `logs/server.log` is always saved without colors.
+
+## Next version:  events completed
+
+- New  interfaces that were missing: `BlockEvent`, `ChunkEvent`, `LevelEvent`, `LevelInitEvent`, `LevelLoadEvent`, `LevelUnloadEvent`, `InventoryEvent`, `FurnaceBurnEvent`, `FurnaceSmeltEvent`, `PlayerBucketEvent`, `PlayerCreationEvent`, `PlayerGlassBottleEvent`, `ServerEvent`, `EntityCombustEvent`, `EntityLevelChangeEvent`, `EntityMotionEvent`, `EntityEatBlockEvent`, `EntityInventoryChangeEvent`, `CreeperPowerEvent`, `EntityGenerateEvent` and `ItemFrameDropItemEvent`. The last three (and `EntityGenerateEvent`) are not fired yet, because their mechanics are missing.
+- Now fired: `LevelInit` (new world), `PlayerCreation`, `EntityLevelChange` (before `PlayerChangeDimension`), `EntityMotion` (pushes on players), `EntityInventoryChange` (inventory slots), `PlayerGlassBottle` (cauldron) and `EntityEatBlock` (cake).
+- Furnaces: `FurnaceBurn` and `FurnaceSmelt` are now cancelable, as in  (`burnTime` and `setResult` can be changed).
+- `LevelLoad` and `LevelUnload` are `WorldLoad` and `WorldUnload`, with 's name. `LevelUnload` cannot be cancelled.
+- The base classes receive the events of their family (for example, listening to `BlockEvent` receives every block event).
+
 # Changelog
 
-## Unreleased: startup
+## 1.2.0: plugins from source code
+
+### Added
+
+- Plugins without a jar: the server loads plugins straight from `.java` files and compiles them on startup, on `/plugins reload` and on `/plugins enable`. There are two ways: a folder `plugins/<Name>/` with `plugin.properties` and the `.java` files, or a single file `plugins/<Name>.java` (with an optional `<Name>.properties`). Jars keep working the same way. It requires running the server with a JDK.
+- The compiled output is stored in `plugins/.cache/<Name>/` and is only rebuilt when a `.java` file changes. If it does not compile, the plugin is not loaded and the console shows the errors (file, line, message).
+
+## 1.2.0: plugin API 1.7 and HUD
+
+### Added
+
+- Plugin API 1.7 (`api=1.7`). The new events, `Plugin.tr(...)` and listening to events by interface are part of API 1.7: a plugin that uses them declares `api=1.7`, and plugins for earlier versions keep loading.
+- `Plugin.hudScreenWidth(p)` and `Plugin.hudOffsetY(p)`: read the width and the vertical offset of a player's scoreboard.
+- `Start.sh`: installs the server (if needed) and starts it from its folder. `./Start.sh --reinstalar` (or `--reinstall`) builds it again; `JAVA_OPTS` passes options to Java. Requires Java 17 or newer.
+- `compiler.sh <plugin folder>`: compiles the plugin against `server/target/server-plugin-api.jar` and writes `plugins/<name>.jar`, with `plugin.properties`, `config.properties` and `lang/` inside.
+
+### Changed
+
+- Version 1.2.0 (it was 1.7.0 beta). The plugin API goes from 1.6 to 1.7.
+- HUD: the plugin decides the scoreboard: the corner (`hudPosition`), the vertical offset (`hudOffsetY`) and the width (`hudScreenWidth`, 427 px by default). The `/hud` command was removed. `hud-position`, `hud-offset-y` and `hud-screen-width` were removed from `server.properties`: if you had them, they no longer have any effect.
+- `hud-max-lines` stays in `server.properties`: the maximum number of scoreboard lines per player.
+- `.gitignore` ignores `worlds/` and `plugins/`, which are server data.
+
+## 1.2.0: Plugin events and messages (second batch)
+
+- New events (from ): `PlayerDamageByMob`, `EntityDamageByChildEntity`, `EntityDamageByBlock`, `EntityCombustByBlock`, `EntityCombustByEntity`, `EntityEffectAdd`, `EntityEffectRemove`, `InventoryPickupArrow`, `EntityArmorChange`, `EntityEatItem`, `EntityDrinkPotion`, `EntityBlockChange`, `SpawnChange`, `LowMemory` and `QueryRegenerate`. `ItemPickup` is also `InventoryPickupItemEvent`.
+- The plugin system messages (loading, errors, commands, `/plugins`) follow the server language, in the six languages. The exceptions thrown by the API are in English.
+- `tr(key, args...)` in `Plugin`: plugins translate their own messages with `lang/<code>.properties` inside the jar.
+- Plugin tests that compared Spanish texts now set the language to Spanish.
+
+## 1.2.0: Plugin events: more events
+
+- New plugin events: `ProjectileHit`, `PlayerBucketFill`, `PlayerBucketEmpty`, `PlayerPickupExpOrb`, `PlayerLogin`, `PlayerUseFishingRod`, `ItemSpawn`, `ItemDespawn` and `RemoteServerCommand` (RCON). Each one has its interface in `net.BlockNes.event.*`.
+- Chain TNT now also goes through `ExplosionPrime`: if a plugin cancels it, that TNT does not light and stays where it is.
+- `Plugins.md` documents the new events and the ones that are still missing.
+
+## 1.2.0: `/spawn <world>`
+
+### Added
+
+- New command `/spawn <world>` (OP only): if the folder `worlds/<world>` exists, it becomes the normal world without restarting. Everyone in the Overworld goes to its spawn, new players spawn there, and `level-name` in `server.properties` is saved, so it stays after a restart. The old world is saved and kept on disk with its items, mobs, XP, falling blocks and portals. Players in the Nether stay where they are. `/spawn <player>` is still checked first when a player has that name. Not from the Nether.
+
+### Changed
+
+- When the normal world changes, players in the Overworld make a short trip to the Nether and back, so their game clears the old world. That fires the dimension-change event twice.
+- Fix: the trip back to the Overworld waits until the client has arrived in the Nether (`PLAYER_SPAWN`). Before, both changes went out in the same tick and the client could keep the Nether sky. If the client does not arrive within 5 seconds, the player goes back anyway. A player who leaves during the trip is saved in the Overworld, at the new spawn.
+- New: a `type.txt` file inside `worlds/<name>` sets that world's generator (`flat` or `plano`, `normal`, `nether` or `hell`). The server writes it the first time it uses the world, with the type the world already has (the type of its saved chunks), or `level-type` for a new world. A flat lobby stays flat even when the server's `level-type` is `normal`. Changing `type.txt` to another type moves the saved chunks to `region-<old type>-<date>/` (not deleted) and generates the world again.
+- Fix: `level-type` no longer changes a world that already has chunks. Before, a world without `type.txt` took `level-type`, so a normal world could be moved aside and generated again as flat. The server now writes the type of its saved chunks to `region/generador.txt` and no longer guesses it from the terrain on each start.
+- Plugins get `WorldUnload` for the old world and `WorldLoad` for the new one when `/spawn <world>` changes it.
+- When the normal world changes, beds from the old world are forgotten and anyone asleep wakes up. Players without a bed in the new world appear at its spawn.
+
+## 1.2.0: logs folder and blocknes.yml
+
+### Added
+
+- `blocknes.yml`: advanced settings, created with comments in the server folder on the first start. Restart the server after changing it. A missing setting uses its default value; a wrong value or an unknown key is reported in the console and ignored. Settings: `console.color`, `console.debug`, `logs.max-size-mb`, `saves.autosave-minutes`, `items.despawn-seconds`, `xp-orbs.lifetime-seconds`, `mobs.max-total`, `mobs.hostile-per-player`, `mobs.animals-max` and `mobs.animals-per-player`. The defaults are the values the server already used.
+
+- New command `/clear [player]`: empties the inventory and the armor (OP only).
+- New command `/xp <amount>[L] [player]`: gives XP points, or levels with `L` (for example `/xp 5L`). OP only.
+- New command `/spawn` (OP only): without a name, it sets the world spawn to the block you are standing on. New players and players without a bed appear there, the spawn is saved with the world, and the spawn protection moves with it. For a lobby, set the spawn on the lobby. `/spawn <player>` takes you to that player. It does not work from the Nether.
+- New command `/pos [player]`: shows the coordinates and the dimension. Anyone can see their own; seeing another player's needs OP.
+- New command `/difficulty <peaceful|easy|normal|hard>`: changes the difficulty until the next restart. `server.properties` is not changed.
+- New commands `/save-on` and `/save-off`: turn the automatic save on or off. `/save-all` still saves everything.
+
+### Changed
+
+- `/help` now lists `/enchant`, `/weather` and `/debug`, which already worked but were missing from the list.
+- The log file moves to `logs/server.log`, and the `logs/` folder is created on the first start. A `server.log` and `server.log.old` from earlier versions are moved into `logs/` automatically.
+- Autosave, item despawn, XP orb lifetime and the mob limits read their values from `blocknes.yml` instead of fixed numbers in the code.
+- `Mobs.MAX` and `ItemEntity.DESPAWN_TICKS` are removed. Their values are the defaults of `mobs.max-total` and `items.despawn-seconds`; plugins that read them should read the settings instead.
+
+## 1.2.0: console
+
+### Changed
+
+- The startup header lines up its values in one column, with a single space after the longest label and no tabs or extra spaces. It is written to `server.log` too. With colors on, the labels are bold and the links are underlined in cyan.
+- Errors from `World` (corrupt chunks or `tiles.dat`, failed saves of chunks, tiles and time, and failed folder creation) and from the ender chests went straight to `System.err`, with no time and no `server.log` entry. They now go through the console log like the other errors.
+
+## 1.2.0: falling sand, gravel and anvils
+
+### Changed
+
+- Sand, gravel and anvils fall as entities, following  2.0 (`block/Fallable.php`, `entity/FallingSand.php`). Before, a block without support teleported down in one step. Now it becomes a falling entity that moves with gravity (0.04 per tick) and drag (0.02), so players see it fall.
+- The block leaves the world on the entity's first tick, so the sand above starts falling right after it. A column without support collapses from the bottom up, one block per tick.
+- Falling blocks pass through air, water and blocks without a collision box (grass, flowers, torches). Landing on water replaces the water. Landing on a non-solid block such as tall grass drops the block as an item and leaves that block in place. Before, sand stopped on top of tall grass.
+- Anvils play the fall sound (event 1022) when they land and hurt the players and mobs under them: `(height - 1) * 2` damage, up to 40, as in .
+- Falling blocks in the air are saved in `caida.dat` in each world folder and keep falling after a restart.
+- One difference from : if the origin block is already gone on the entity's first tick, the entity is removed.  keeps it alive and places an extra block when it lands.
+- Blocks with a collision box that is not a full cube (slabs, stairs, fences...) count as full cubes here.  uses their real box, so sand landing on a bottom slab stops at half height there and a full block higher here.
+
+## 1.2.0: startup
 
 ### Changed
 
@@ -8,7 +129,7 @@
 - Startup prepares the spawn in two passes with the same progress lines: the spawn area (`Preparing spawn area: X%`) and then the spawn chunks (`Preparing spawn chunks: X%`). The chunk pass used to run silently for a few seconds.
 - The progress counter is shared (`net.BlockNes.util.PassProgress`) by the spawn, chunk and pregeneration passes.
 
-## Unreleased: rain and fire
+## 1.2.0: rain and fire
 
 ### Changed
 
@@ -16,7 +137,7 @@
 - Rain puts out any mob that is already on fire, animals included.
 - Flint and steel does nothing while it rains in the overworld: the player gets a message and the item keeps its durability. In the Nether it works as before.
 
-## Unreleased: more cancellable plugin events
+## 1.2.0: more cancellable plugin events
 
 ### Added
 
