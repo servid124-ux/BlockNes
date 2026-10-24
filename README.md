@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="logo.svg" alt="BlockNes logo" width="150">
+<img src="logo/logo.svg" alt="BlockNes logo" width="150">
 
 # 🧱 BlockNes
 
 **A Minecraft: Pocket Edition 0.15.10 server, written in Java**
 
-![Release](https://img.shields.io/github/v/release/servid124-ux/BlockNes?style=flat-square&color=2ea44f) ![Downloads](https://img.shields.io/github/downloads/servid124-ux/BlockNes/total?style=flat-square) ![Last commit](https://img.shields.io/github/last-commit/servid124-ux/BlockNes?style=flat-square) ![MCPE](https://img.shields.io/badge/MCPE-0.15.10-blue?style=flat-square) ![Java](https://img.shields.io/badge/Java-17%2B-orange?style=flat-square) ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Termux-lightgrey?style=flat-square)
+![Release](https://img.shields.io/github/v/release/servid124-ux/BlockNes?style=flat-square&color=2ea44f) ![Downloads](https://img.shields.io/github/downloads/servid124-ux/BlockNes/total?style=flat-square) ![Last commit](https://img.shields.io/github/last-commit/servid124-ux/BlockNes?style=flat-square) ![MCPE](https://img.shields.io/badge/MCPE-0.15.10-blue?style=flat-square) ![Java](https://img.shields.io/badge/Java-17%2B-orange?style=flat-square) ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Termux-lightgrey?style=flat-square) ![Plugin API](https://img.shields.io/badge/plugin%20API-1.8-8250df?style=flat-square)
 
 📥 [Download](https://github.com/servid124-ux/BlockNes/releases/latest) · 📝 [Changelog](CHANGELOG.md) · 🔌 [Plugin API](Plugins.md) · 🐛 [Report a bug](https://github.com/servid124-ux/BlockNes/issues)
 
@@ -20,6 +20,7 @@ BlockNes implements the Minecraft PE network protocol and the game logic in Java
 
 - 🔌 **Plugin API**: write plugins as `.jar` files or as plain `.java` source that the server compiles itself. Reload them with `/plugins reload`, or enable and disable one without restarting.
 - 🌍 **Survival and creative** in the overworld (`normal` or `flat` worlds) and in the Nether.
+- 🧱 **OneBlock mini-game** built in: set `level-type=oneblock` and break the single block to progress through phases (see `/oneblock`).
 - 🌐 **Guided setup** in six languages: English, Spanish, Portuguese, French, German and Italian.
 - 🛡️ **Admin tools**: operators, white list, bans by name and by IP, RCON and Query (GS4).
 - 🖥️ **Live terminal title** on Linux and Termux, with players, TPS and RAM.
@@ -80,7 +81,7 @@ The server sets the terminal-session title itself, so no wrapper script is neede
 
 - 🟢 `BlockNes • 👥 3/20 • 20 TPS • RAM ~184 MiB` while online. The icon follows the TPS: 🟢 18 and up, 🟡 12 to 17, 🔴 below 12.
 - ⏳ `BlockNes • Spawn 40%` while starting (stage and progress).
-- ⚫ `BlockNes • Detenido` after it stops.
+- ⚫ `BlockNes • Detenido` after it stops. (This one word is always Spanish, whatever `language` is set to.)
 
 While online, the title is checked every 10 seconds, but it is rewritten only when something visible changes (players, TPS, or RAM rounded to 8 MiB). Use `-Dblocknes.title.refresh=30` to change the interval (minimum 5 seconds), or `-Dblocknes.title.refresh=0` to keep the title fixed at startup, when ready and at shutdown. The RAM figure is the process's resident memory where Linux/Termux exposes `/proc`, and the occupied JVM heap elsewhere.
 
@@ -109,7 +110,7 @@ Missing keys are added with their default value the next time the server starts.
 | Key | Default | Description |
 | --- | --- | --- |
 | `server-name` | `BlockNes Server` | Internal name, used when `motd` is empty |
-| `motd` | `My Minecraft server` | Text shown in the server list |
+| `motd` | `§aWelcome to BlockNes!` | Text shown in the server list |
 | `server-port` | `19132` | UDP port (1-65535) |
 | `gamemode` | `survival` | `survival` or `creative` (`0` / `1`) |
 | `difficulty` | `1` | `0` peaceful, `1` easy, `2` normal, `3` hard (names work too) |
@@ -118,7 +119,7 @@ Missing keys are added with their default value the next time the server starts.
 | `view-distance` | `8` | Chunks sent to each player (2-24) |
 | `level-name` | `world` | Folder inside `worlds/` for the normal world. `/spawn <world>` changes it and saves it here |
 | `level-seed` | *(empty)* | Seed; empty means random. Once `seed.txt` exists in the world folder, it wins |
-| `level-type` | `normal` | `normal`, `flat` or `nether`. Sets the type of **new** worlds only; an existing world keeps the type in its `type.txt` |
+| `level-type` | `normal` | `normal`, `flat`, `nether` or `oneblock` (one block in the void: breaking it drops its items and another block appears from the current phase). Sets the type of **new** worlds only; an existing world keeps the type in its `type.txt` |
 | `language` | *(set by wizard)* | `eng`, `spa`, `por`, `fra`, `deu`, `ita` |
 | `pvp` | `on` | `off`: players cannot hit other players |
 | `spawn-mobs` | `on` | `off`: no natural mob spawns (spawn eggs and `/summon` still work) |
@@ -127,12 +128,12 @@ Missing keys are added with their default value the next time the server starts.
 | `enable-query` | `true` | Query GS4 on the same UDP port, used by server list tools |
 | `enable-rcon` | `false` | RCON over TCP (Source protocol). Uses `rcon.password` to log in |
 | `rcon.password` | *(empty)* | Password for RCON |
-| `rcon.port` | `19132` | TCP port for RCON (1-65535) |
+| `rcon.port` | `19132` | TCP port for RCON (1-65535). The game uses UDP, so both can share the number; change it if another program already uses that TCP port |
 | `network.upnp-forwarding` | `false` | `true`: open the UDP port on the router with UPnP at startup and close it at shutdown |
 | `plugin-max-errors` | `0` | Errors in plugin handlers before the plugin is disabled. `0` = no limit |
 | `plugin-max-slow-calls` | `0` | Handler calls slower than 100 ms before the plugin is disabled. `0` = no limit |
 | `plugin-max-tasks` | `0` | Pending tasks per plugin; more of them throw `IllegalStateException`. `0` = no limit |
-| `hud-max-lines` | `15` | Lines beyond this are dropped |
+| `hud-max-lines` | `15` | Maximum scoreboard lines shown per player (1-40). Lines beyond this are dropped |
 
 Invalid or out-of-range values fall back to a safe default and a warning is printed. The scoreboard position, vertical offset and width are set by the plugin that draws it (`hudPosition`, `hudOffsetY`, `hudScreenWidth`). There is no `/hud` command.
 
@@ -165,8 +166,9 @@ Commands work from the console (with or without `/`) and in-game chat (starting 
 | `/say <message>` | Broadcast a message |
 | `/me <action>` | Action message |
 | `/tell <player> <message>` | Private message |
+| `/oneblock` | OneBlock progress: current phase, breaks, breaks left until the next phase, your own breaks and the top 5 breakers |
 | `/kick <player> [reason]` | Kick a player |
-| `/gamemode <0\|1> [player]` | Change game mode |
+| `/gamemode <survival\|creative\|0\|1\|s\|c> [player]` | Change game mode |
 | `/tp [player] <x y z \| player>` | Teleport |
 | `/spawn` | OP: sets the world spawn to the block you are standing on. New players and players without a bed appear there. Saved with the world. Not from the Nether |
 | `/spawn <player>` | OP: teleports you to that player |
@@ -178,7 +180,7 @@ Commands work from the console (with or without `/`) and in-game chat (starting 
 | `/clear [player]` | Empty the inventory and armor (OP only) |
 | `/xp <amount>[L] [player]` | Give XP points, or levels with `L` (e.g. `/xp 5L`) (OP only) |
 | `/enchant <player> <enchantment> [level]` | Enchant the item in hand, e.g. `/enchant Steve sharpness 5` |
-| `/weather <clear\|rain\|thunder\|storm> [ticks]` | Change the overworld weather (`/weather rain 600`); without ticks it lasts a random time |
+| `/weather <clear\|rain\|thunder\|storm> [ticks]` | Change the overworld weather (`/weather rain 600`); without ticks it lasts a random time. `storm` is rain with thunder, `thunder` is thunder without rain. `sunny` and `fine` also mean `clear` |
 | `/difficulty <peaceful\|easy\|normal\|hard>` | Change the difficulty until the server restarts (`server.properties` is not changed) |
 | `/summon <mob> [player]` | Spawn a mob next to a player |
 | `/kill [player]` / `/heal [player]` | Kill / heal |
@@ -187,7 +189,7 @@ Commands work from the console (with or without `/`) and in-game chat (starting 
 | `/save-on` / `/save-off` | Turn autosave on or off (`/save-all` still saves everything) |
 | `/status` | Server status |
 | `/debug [on\|off]` | Show every damage / hunger change in your chat |
-| `/plugins` | List loaded plugins |
+| `/plugins` (or `/pl`) | List loaded plugins |
 | `/plugins reload` | Reload plugins (OP only) |
 | `/plugins enable <name>` / `/plugins disable <name>` | Enable or disable one plugin without restarting. `disable` also disables the plugins that depend on it. `enable` re-reads the jar (OP only) |
 | `ban <player>` / `pardon <player>` | Ban or pardon a player name (banned players are kicked) |
@@ -202,6 +204,28 @@ Plugins are `.jar` files in `plugins/`, or plain source code (a folder with `plu
 
 The plugin API is documented in **[Plugins.md](Plugins.md)**: events, commands, scheduler, menus, recipes, regions, per-player data, the HUD, and how to compile a plugin. The examples in `plugins-ejemplo/` show it in use.
 
+## 🛠️ Building from source
+
+You only need this if you want to change the server. Releases already contain the jars.
+
+- A **JDK** (`javac` and `jar`). JDK 17 or newer is the safe choice (the build was checked with JDK 21); the classes are compiled for Java 11 and the server runs on Java 17+.
+- RakNetLib next to this project (`../raknetlib`). If it is missing, the script clones it from [GitHub](https://github.com/servid124-ux/RakNetLib), so `git` is needed in that case.
+
+```sh
+sh build.sh
+```
+
+It builds RakNetLib first and then the server, and writes:
+
+| Output | What it is |
+| --- | --- |
+| `server/target/server.jar` | The server, with RakNetLib inside. Run it with `java -jar` |
+| `server/target/server-plugin-api.jar` | Compile-only jar for plugin authors (the server classes without the launcher class `BlockNes`) |
+
+Environment variables: `RAKNETLIB_DIR=/path` uses that copy of RakNetLib as it is (nothing is cloned or updated); `RAKNETLIB_REPO=<url>` changes the repository it is cloned from.
+
+The source is in `server/src/main/java/net/BlockNes/`. [ESTRUCTURA.md](server/src/main/java/net/BlockNes/ESTRUCTURA.md) explains the packages (in Spanish), and `network/protocolo/LEEME.md` explains the packet layer.
+
 ## 🆘 Troubleshooting
 
 | Problem | Solution |
@@ -210,9 +234,12 @@ The plugin API is documented in **[Plugins.md](Plugins.md)**: events, commands, 
 | Most commands don't work | They are OP-only. Add your name to `ops.txt`, or run `/op <name>` in the console |
 | A plugin doesn't load | Run `/plugins` to see what is loaded, then check `logs/server.log` |
 | `java: command not found` on Termux | `pkg install openjdk-17` |
+| The client says the server or the client is outdated | The protocol must match exactly: use a Minecraft PE **0.15.10** client |
+| The console colors look broken | Run with `NO_COLOR=1`, or set `console.color: false` in `blocknes.yml` |
+| The server stops when I close Termux | Keep the session open (see the note about terminal tabs above), or run `termux-wake-lock` so Android does not suspend it |
 | Where are the logs? | `logs/server.log`. The previous one is `logs/server.log.old` |
 
 ## 🙏 Credits
-.
+
 - [**RakNetLib**](https://github.com/servid124-ux/RakNetLib): the UDP transport, bundled inside `server.jar`.
- 
+- 
