@@ -1,6 +1,6 @@
 # BlockNes Plugin API
 
-**API version 1.7** · BlockNes **1.2.0** · Minecraft: Pocket Edition **0.15.10** (protocol 84)
+**API version 1.8** · BlockNes **1.2.3** · Minecraft: Pocket Edition **0.15.10** (protocol 84)
 
 This guide explains how plugins work in BlockNes: how to build one, how the server loads it, and everything the API gives you (events, commands, permissions, tasks, config files, menus, recipes, regions, the HUD and more).
 
@@ -12,10 +12,11 @@ Plugins are written in **Java** and shipped as a `.jar` file in the server's `pl
 
 1. [How it works](#how-it-works)
 2. [Quick start: your first plugin](#quick-start-your-first-plugin)
-3. [Building a plugin](#building-a-plugin) (including [source plugins, no jar](#source-plugins-no-jar-needed))
-4. [plugin.properties reference](#pluginproperties-reference)
-5. [Lifecycle and load order](#lifecycle-and-load-order)
-6. [Plugin API](#plugin-api)
+3. [Cheat sheet](#cheat-sheet)
+4. [Building a plugin](#building-a-plugin) (including [source plugins, no jar](#source-plugins-no-jar-needed))
+5. [plugin.properties reference](#pluginproperties-reference)
+6. [Lifecycle and load order](#lifecycle-and-load-order)
+7. [Plugin API](#plugin-api)
    - [Information and logging](#information-and-logging)
    - [Listening to events](#listening-to-events)
    - [Commands](#commands)
@@ -31,13 +32,15 @@ Plugins are written in **Java** and shipped as a `.jar` file in the server's `pl
    - [Services: talking to other plugins](#services-talking-to-other-plugins)
    - [Text, arguments and cooldowns](#text-arguments-and-cooldowns)
    - [Translations](#translations)
-7. [Events](#events)
-8. [API 1.6 additions (inside `Plugin`)](#api-16-additions-inside-plugin)
-9. [API 1.7 additions (inside `Plugin`)](#api-17-additions-inside-plugin)
-10. [Limits, errors and performance](#limits-errors-and-performance)
-11. [Full example: an economy and a shop](#full-example-an-economy-and-a-shop)
-12. [Things to know (limitations)](#things-to-know-limitations)
-13. [Troubleshooting](#troubleshooting)
+8. [Events](#events)
+9. [Entity classes](#entity-classes)
+10. [API 1.6 additions (inside `Plugin`)](#api-16-additions-inside-plugin)
+11. [API 1.7 additions (inside `Plugin`)](#api-17-additions-inside-plugin)
+12. [API 1.8 additions (inside `Plugin`)](#api-18-additions-inside-plugin)
+13. [Limits, errors and performance](#limits-errors-and-performance)
+14. [Full example: an economy and a shop](#full-example-an-economy-and-a-shop)
+15. [Things to know (limitations)](#things-to-know-limitations)
+16. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -79,7 +82,7 @@ main=ejemplo.HolaMundo
 version=1.0
 author=You
 description=Says hello
-api=1.7
+api=1.8
 ```
 
 `src/ejemplo/HolaMundo.java`:
@@ -102,7 +105,7 @@ public class HolaMundo extends Plugin {
         });
 
         // Register a command: /hello [name]
-        command("hello", "Say hello", "[name]", false, (sender, args) -> {
+        command("hello").describe("Say hello").usage("[name]").run((sender, args) -> {
             String who = args.length > 0 ? args[0] : sender.name();
             sender.send("Hello, " + who + "!");
         });
@@ -136,12 +139,30 @@ Typing `/hello` in game answers `Hello, <your name>!`.
 
 ---
 
+## Cheat sheet
+
+The calls you will use most. Each one is explained in its section.
+
+| I want to... | Write |
+| --- | --- |
+| react to something that happens | `on(Events.PlayerJoin.class, e -> ...)` |
+| add a command | `command("kit").describe("Get a kit").permission("tour.kit").run((sender, args) -> ...)` |
+| know who ran a command | `Player p = playerOf(sender);` (`null` for the console) |
+| send a message | `message(player, color("&aHello"))`, or `broadcast(color("&eHello all"))` |
+| run something later, or every N ticks | `runLater(40, () -> ...)`, `runRepeating(0, 20, () -> ...)` (20 ticks = 1 second) |
+| keep a setting | `config().setDefault("kit-seconds", 60).save();` |
+| keep data for a player | `playerData().of(player).set("stats.kills", 3);` |
+| show a scoreboard line | `hudLine(player, "kills", 1, color("&cKills: &f3"));` |
+| get the class of a mob | `Entity e = entityOf(mob);` |
+
+---
+
 ## Building a plugin
 
 ### What you need
 
 - A JDK. The server itself needs **Java 17 or newer**. Your plugin can be compiled with `-source 11 -target 11` (that is what the server build uses) or any newer level that the server's Java can run.
-- `server-plugin-api.jar`. It is produced by the server build (`server/target/server-plugin-api.jar`) and published with each release. It contains the `net.BlockNes.*` classes (without the entry class `net.BlockNes.BlockNes`; `AccessLists` is now `net.BlockNes.BlockNes.AccessLists`) and the `raknetlib.*` classes (for example `BinaryStream`).
+- `server-plugin-api.jar`. It is produced by the server build (`server/target/server-plugin-api.jar`) and published with each release. It contains the `net.BlockNes.*` classes (without the entry class `net.BlockNes.BlockNes`; `AccessLists` is now `net.BlockNes.BlockNes.AccessLists`) and the `raknetlib.*` classes (for example `BinaryStream`). RakNetLib 2.x keeps `BinaryStream` and `RakNet` in `raknetlib`, and puts `RakNetServer` and `Session` in `raknetlib.server`, `RakNetClient` in `raknetlib.client`, `GameBatch` and `Zlib` in `raknetlib.batch`, and `EncapsulatedPacket` in `raknetlib.packet`.
 
 ### Compile and package
 
@@ -155,7 +176,21 @@ cp plugin.properties build/            # also config.properties and lang/ if you
 (cd build && jar cf ../MyPlugin.jar .)
 ```
 
-If your copy of the server includes the helper script, `compiler.sh <plugin folder>` does the same: it compiles against `server/target/server-plugin-api.jar` and writes `plugins/<name>.jar` with `plugin.properties`, `config.properties` and `lang/` inside.
+To avoid retyping this, save it as `pack.sh` next to your plugin folder and run `sh pack.sh MyPlugin /path/to/server-plugin-api.jar`. It expects `src/`, `plugin.properties` and, optionally, `config.properties` and `lang/` inside the plugin folder:
+
+```sh
+#!/bin/sh
+# usage: sh pack.sh <plugin folder> <server-plugin-api.jar>
+set -e
+dir="$1"; api="$2"; name="$(basename "$dir")"
+rm -rf "$dir/build" && mkdir -p "$dir/build"
+javac -source 11 -target 11 -encoding UTF-8 -cp "$api" -d "$dir/build" $(find "$dir/src" -name '*.java')
+cp "$dir/plugin.properties" "$dir/build/"
+[ -f "$dir/config.properties" ] && cp "$dir/config.properties" "$dir/build/"
+[ -d "$dir/lang" ] && cp -r "$dir/lang" "$dir/build/"
+(cd "$dir/build" && jar cf "../../$name.jar" .)
+echo "OK -> $name.jar (copy it to plugins/)"
+```
 
 ### Important notes
 
@@ -227,7 +262,7 @@ website=https://example.com
 prefix=MP
 description=What it does
 # minimum API version the plugin needs
-api=1.7
+api=1.8
 
 # must be loaded before this plugin, or this plugin does not load
 depend=Eco,Other
@@ -253,7 +288,7 @@ commands.home.permission-message=You cannot use /home
 
 Notes:
 
-- `api` is the **minimum** version. A plugin that asks for an API newer than the server's (`1.7`) is **not loaded**; the console says so. `api=1.5` loads fine on a 1.7 server. A plugin without `api` loads without the check.
+- `api` is the **minimum** version. A plugin that asks for an API newer than the server's (`1.8`) is **not loaded**; the console says so. `api=1.5` loads fine on a 1.8 server. A plugin without `api` loads without the check.
 - Declaring a command in `plugin.properties` does not register it. You still register it in code (see [Commands](#commands)); the properties only supply defaults for what you leave empty. If you declare a command and never register it, the server warns in the log when the plugin enables.
 - Permissions listed here are registered for you when the plugin loads.
 - The file is a Java `.properties` file read as UTF-8. A `#` only starts a comment at the **start of a line**; if you write `name=Foo # note`, the note becomes part of the value.
@@ -383,7 +418,7 @@ unregisterAllEvents();         // every handler of this plugin
 **What you can listen to.** The type you pass to `on(...)` can be:
 
 - the event class: `Events.PlayerChat.class`;
-- the PocketMine-name interface that the event implements: `net.BlockNes.event.player.PlayerChatEvent.class`;
+- the PocketMine-named interface that the event implements: `net.BlockNes.event.player.PlayerChatEvent.class`;
 - a base class or interface to receive a whole family: `Events.PlayerEvent.class` (every player event), `net.BlockNes.event.player.PlayerEvent.class`, `Event.class` (every event), `net.BlockNes.event.entity.EntityDamageEvent.class` (player and mob damage)...
 
 A method handler (`@EventHandler`) must have **exactly one parameter**, the event type. Otherwise it is skipped with a warning.
@@ -414,11 +449,31 @@ if (ev.isCancelled()) return;
 
 ### Commands
 
-There are four ways to register a command (A to D below). All of them are removed automatically when the plugin is disabled.
+The shortest way is the builder, `command(name)` (API 1.8). The four older forms, A to D below, still work. All of them are removed automatically when the plugin is disabled.
 
 Plugin commands are checked **before** the built-in server commands, so a plugin command overrides a built-in command with the same name (`/help`, `/tp`...). If two plugins register the same name, the last one wins and the log prints a warning.
 
 Command names are lower-case; a leading `/` is ignored. Players can type them in chat; the console can type them without the `/`.
+
+```java
+// Builder (API 1.8): only the name and run() are needed
+command("kit")
+    .describe("Get a starter kit")                // shown in /help
+    .usage("[name]")                              // shown in /help, after the command name
+    .aliases("starter", "pack")                   // more names for the same command
+    .permission("tour.kit")                       // a permission node; use .opOnly() for OPs only; leave it out for everyone
+    .run((sender, args) -> sender.send("Kit for " + (args.length > 0 ? args[0] : sender.name())));
+
+command("reset").describe("Reset the arena").opOnly().executor((sender, cmd, label, args) -> {
+    if (args.length == 0) return false;          // false = print the usage
+    sender.send("Arena " + args[0] + " reset");
+    return true;
+});
+```
+
+`run(...)` takes the same `(sender, args)` lambda as form A below, and `executor(...)` takes the `CommandExecutor` of form C. The builder maps to the older arguments like this: `.opOnly()` is `true`, `.permission("x")` is `"x"`, and leaving it out is `""` (everyone). Anything you do not set (description, usage, permission) is taken from `plugin.properties`, as in the other forms.
+
+The older forms:
 
 ```java
 // A) Lambda: (sender, args). 4th argument = true -> OPs and console only; false -> everybody.
@@ -464,7 +519,7 @@ The 4th argument of the lambda forms (`command(name, description, usage, X, ...)
 
 Useful details:
 
-- **The sender.** Forms A and B give a `Commands.Sender`; C and D give a `CommandSender`. Both have `name()`, `isOp()`, `send(String)` and `isPlayer()`. The console is named `CONSOLE`. To get the `Player` of a sender: `playerExact(sender.name())` (it is `null` for the console).
+- **The sender.** Forms A and B give a `Commands.Sender`; C and D give a `CommandSender`. Both have `name()`, `isOp()`, `send(String)` and `isPlayer()`. The console is named `CONSOLE`. To get the `Player` of a sender, use `playerOf(sender)` (API 1.8). It is `null` for the console: `Player p = playerOf(sender);`.
 - **Usage.** In forms C and D returning `false` prints `Usage: /name <usage>`.
 - **Defaults from `plugin.properties`.** Anything you leave empty (description, usage, permission) is taken from `commands.<name>.*`; aliases and `permission-message` come from there too.
 - **No permission.** The sender sees "You do not have permission to use this command" (or the `permission-message` you set).
@@ -752,7 +807,7 @@ sword.getId();  sword.getDamage();  sword.getCount();  sword.getCustomName();  s
 
 `Item.AIR` means "nothing". Names and lore are limited in length (the server throws `IllegalArgumentException` if they are too long).
 
-Giving items: `give(player, item)` returns what did not fit. The PocketMine-style inventory also works: `player.getPlayerInventory().addItem(item)`, `removeItem`, `setItem`, `getItemInHand()`, `contains`, `clear()`.
+Giving items: `give(player, item)` returns what did not fit. The inventory also works: `player.getPlayerInventory().addItem(item)`, `removeItem`, `setItem`, `getItemInHand()`, `contains`, `clear()`.
 
 ### Menus
 
@@ -940,7 +995,7 @@ If the key is missing in the current language it uses `lang/eng.properties`; if 
 
 ## Events
 
-All events live in `net.BlockNes.plugin.Events` (one nested class each) and extend `Event`. Each one also implements the interface with the PocketMine-MP name, in `net.BlockNes.event.*` (`player`, `block`, `entity`, `inventory`, `level`, `server`, `plugin`), so you can listen with either.
+All events live in `net.BlockNes.plugin.Events` (one nested class each) and extend `Event`. Each one also implements the interface with its PocketMine name, in `net.BlockNes.event.*` (`player`, `block`, `entity`, `inventory`, `level`, `server`, `plugin`), so you can listen with either.
 
 How to read the tables:
 
@@ -983,6 +1038,9 @@ on(net.BlockNes.event.block.BlockBreakEvent.class, e -> {
 | `PlayerRespawn` | no | The player respawned |
 | `PlayerHeal` | yes | About to regain health. `amount` *(edit)*. (`EntityRegainHealthEvent`) |
 | `PlayerAttack` | yes | A player is about to hit a player or mob. `targetPlayer`, `targetMob`, `targetEntityId`, `weapon`, `damage` *(edit)* |
+| `GolemConstruct` | yes | A player builds an iron golem or a snow golem. `golemType` (`Mob.IRON_GOLEM` = 20 or `Mob.SNOW_GOLEM` = 21), `x, y, z` of the head block. Cancelled = no golem, and the blocks stay |
+| `PlayerMilkCow` | yes | A player milks a cow or a mooshroom with an empty bucket in hand. `cow`, `bucket` (the bucket in hand). Cancelled = no milk, and the bucket is not used |
+| `PlayerShearEntity` | yes | A player shears a sheep with shears. `entity`, `drops` *(edit the list; the wool by default)*. Cancelled = the sheep keeps its wool, and the shears are not used |
 | `PlayerGamemode` | yes | `from`, `to` (`0` survival, `1` creative) |
 | `PlayerHungerChange` | no | `from`, `to` (food level) |
 | `PlayerExhaust` | yes | Hunger from tiredness. `amount` *(edit)* |
@@ -1011,12 +1069,15 @@ on(net.BlockNes.event.block.BlockBreakEvent.class, e -> {
 | `BlockForm` | yes | Lava touching water becomes stone (4) or obsidian (49). `id` = the block that will form |
 | `BlockSpread` | yes | Grass/mycelium spreading, fire spreading. `sourceX/Y/Z`, `x, y, z`, `id`, `meta` |
 | `BlockFromTo` | yes | A liquid flows. `sourceX/Y/Z`, `x, y, z`, `liquidId` (8 water, 10 lava), `newMeta` |
-| `BlockGrow` | no | A crop, stem or sapling grows. `x, y, z, id, meta` (before growing) |
+| `BlockGrow` | yes | A crop, stem, sapling or plant grows. `x, y, z`, old `id/meta`, proposed `newId/newMeta` *(edit)*. Cancel to stop growth. |
 | `LeavesDecay` | yes | `x, y, z, id` |
-| `BlockUpdate` | no | A block checks its neighbours. Only created if listened to. `x, y, z, id` |
+| `BlockUpdate` | yes | A block checks its neighbours. Only created if listened to. `x, y, z, id`. Cancelled = that block does not update and does not spread the check to its neighbours |
 | `BlockRedstone` | no | `x, y, z` |
 | `SignChange` | yes | `x, y, z`, `lines` *(edit; 4 strings)* |
-| `BlockFade` | - | **Never fired yet** (the server has no melting logic) |
+| `ItemFrameDropItem` | yes | A player takes the item out of an item frame. Fired after `BlockBreak`. `player`, `x, y, z`, `blockId` (199), `getItem()`. Cancelled = the item stays in the frame. Otherwise it drops with the frame's drop chance |
+| `ItemFrameRotate` | yes | A player right-clicks an item frame that already has an item. `item`, `x, y, z`, `oldRotation`, `newRotation` *(edit; 0-7)*. Cancelled = the frame does not turn |
+| `MobSpawnerChange` | yes | A spawn egg is used on a spawner. `x, y, z`, `oldType`, `newType` *(edit; mob network id)*. Cancelled = the spawner keeps its mob and the egg is not used |
+| `BlockFade` | yes | Exposed ice melts to a water source or a snow layer disappears. `x, y, z, blockId`. Cancel to preserve the original block. |
 | `EntityBlockChange` | yes | A falling block (sand, gravel, anvil) lands. `x, y, z, fromId, toId, toMeta` |
 
 ### Mobs, projectiles and explosions
@@ -1024,13 +1085,16 @@ on(net.BlockNes.event.block.BlockBreakEvent.class, e -> {
 | Event | Cancel | Data and notes |
 | --- | --- | --- |
 | `MobSpawn` | yes | `mob`, `natural` (`false` = egg or `/summon`) |
+| `EntityGenerate` | yes | A mob comes out of a spawner (a mob spawner). `type` (mob network id, for example `Mob.ZOMBIE`), `x, y, z` (block), `cause` (`EntityGenerate.CAUSE_MOB_SPAWNER` = 1). Fired before the mob exists, so `getEntity()` is `null`. Cancelled = no mob. Otherwise a `MobSpawn` follows with `natural` = `false` |
+| `MobEatBlock` | yes | A sheep eats grass. `mob`, `x, y, z`, `id` (`2`, grass), `meta`, `residueId`, `residueMeta` *(edit, or `setResidue(id, meta)`; by default `3` and `0`, dirt)*. Cancelled = the grass stays |
 | `MobDamage` | yes | `mob`, `by` (player or `null`), `amount` *(edit)* |
 | `MobDeath` | no | `mob`, `killer`, `drops` *(edit the list)* |
 | `MobDespawn` | no | A mob leaves the world. `mob` |
 | `MobMove` | no | Each tick it moves on x/z. Only created if listened to. `mob`, `fromX`, `fromZ` |
 | `MobTarget` | no | A hostile mob changes target. `mob`, `target` (player or `null`) |
 | `EntityDamageByEntity` | no | A player hit a mob. `mob`, `damager` |
-| `EntityTransform` | - | **Never fired yet** (mobs do not transform) |
+| `EntityTransform` | yes | An entity changes type; currently a pig struck by lightning may become a zombie pigman. `mob`, `targetType` (network type ID). Cancel to preserve the original. |
+| `CreeperPower` | yes | A creeper is charged by lightning. `mob`, `cause` (`CreeperPowerEvent.CAUSE_LIGHTNING`, which is `2`). Cancel to keep it unpowered. PocketMine name: `CreeperPowerEvent`. |
 | `EntityCombust` | yes | An entity is about to catch fire. `eid`, `player` (`null` if a mob), `cause`, `seconds` |
 | `EntityCombustByBlock` | yes | Lava or fire sets a player on fire. `blockId`, `seconds` *(edit)* |
 | `EntityCombustByEntity` | yes | A flaming arrow. `combusterPlayer`, `combusterMob`, `seconds` *(edit)* |
@@ -1046,7 +1110,8 @@ on(net.BlockNes.event.block.BlockBreakEvent.class, e -> {
 | `VehicleDismount` | no | `vehicle` |
 | `VehicleDestroy` | yes | A player breaks a boat or minecart. Same fields as `VehicleMount` |
 | `LightningStrike` | no | `x, y, z` |
-| `ItemSpawn` / `ItemDespawn` | no | `entity` (an item on the ground). `ItemDespawn` does not fire when a player picks it up |
+| `ItemSpawn` | no | `entity` (an item on the ground) |
+| `ItemDespawn` | yes | `entity`. Fires only when the item expires by age, as in PocketMine. Cancelled = the item stays and its age restarts. It does not fire for fire, for the void, or when a player picks the item up |
 
 ### Items and inventories
 
@@ -1056,7 +1121,7 @@ on(net.BlockNes.event.block.BlockBreakEvent.class, e -> {
 | `InventoryPickupArrow` | yes | `item`, `x, y, z` |
 | `PlayerDropItem` | yes | `item`. Cancelling returns it to the inventory |
 | `PlayerItemConsume` | yes | Eating or drinking. `item` |
-| `PlayerItemHeld` | no | `item`, `slot`, `hotbarSlot` |
+| `PlayerItemHeld` | yes | `item`, `slot`, `hotbarSlot`. Cancelled = the previous item stays in hand and the client is resynced |
 | `ItemUse` | no | `item` |
 | `InventoryClick` | no | A slot change sent by the client. `window`, `slot`, `item`. Also `InventoryTransactionEvent` |
 | `InventoryOpen` | yes | `type` (`"chest"`, `"enderchest"`, `"workbench"`, `"furnace"`), `x, y, z` |
@@ -1064,8 +1129,8 @@ on(net.BlockNes.event.block.BlockBreakEvent.class, e -> {
 | `ArmorEquip` | no | `slot`, `item` |
 | `EntityArmorChange` | yes | `slot`, `oldItem`, `newItem` *(edit)* |
 | `CraftItem` | yes | `input` (list of items spent), `result` |
-| `SmeltItem` | no | `x, y, z`, `source`, `result` |
-| `FurnaceBurnFuel` | no | `x, y, z`, `fuel` |
+| `SmeltItem` | yes | `x, y, z`, `source`, `result` *(edit)*. Cancelled = the item does not change (the cooking time is spent anyway). PocketMine name: `SmeltItemEvent`. |
+| `FurnaceBurnFuel` | yes | `x, y, z`, `fuel`, `burnTime` *(edit; the ticks the fuel lasts)*. Cancelled = nothing burns and no fuel is used. PocketMine name: `FurnaceBurnFuelEvent`. |
 | `PlayerEnchantItem` | no | `before`, `result`, `levelsSpent` |
 | `PlayerBucketFill` | yes | `x, y, z, face`, `liquidId`, `bucket`, `item` *(edit; what the player gets)* |
 | `PlayerBucketEmpty` | yes | Same fields; `item` is the empty bucket they get |
@@ -1075,9 +1140,10 @@ on(net.BlockNes.event.block.BlockBreakEvent.class, e -> {
 | Event | Cancel | Data and notes |
 | --- | --- | --- |
 | `WorldLoad` | no | `world`, `nether`. Fired after plugins load, and when `/spawn <world>` changes the world |
-| `WorldUnload` | no | `world`, `nether`. Start of shutdown, before saving |
+| `WorldUnload` | yes, except at shutdown | `world`, `nether`. Fired before `/spawn <world>` switches the normal world: cancelled = nothing changes. At shutdown it fires before saving and cannot be cancelled |
 | `LevelSave` | no | The world was saved |
-| `ChunkLoad` / `ChunkUnload` / `ChunkPopulate` | no | `world`, `x`, `z` (chunk coordinates). `ChunkPopulate` = a new chunk finished generating |
+| `ChunkLoad` / `ChunkPopulate` | no | `world`, `x`, `z` (chunk coordinates). `ChunkPopulate` = a new chunk finished generating |
+| `ChunkUnload` | yes | `world`, `x`, `z`. Fired before the chunk is saved. Cancelled = the chunk stays in memory |
 | `TimeChange` | no | `from`, `to`. Only when time is *set* (commands, sleeping), not the normal clock |
 | `WeatherChange` | yes | From `/weather` or `setWeather(...)`; random weather does not fire it. `type` *(edit)*, `ticks` *(edit)* |
 | `ThunderChange` | no | `thundering`, `weather` |
@@ -1100,25 +1166,26 @@ on(net.BlockNes.event.block.BlockBreakEvent.class, e -> {
 | `LowMemory` | no | Every 5 s if more than 90 % of the maximum memory is used. `memory`, `memoryLimit`, `triggerCount` |
 | `PluginEnable` / `PluginDisable` | no | `plugin`. `PluginDisable` fires just before `onDisable()` |
 
-### PocketMine-MP events completed
+### Events with PocketMine names
 
-These events exist now with their PocketMine-MP names. Listen with the interface in `net.BlockNes.event.*` or with the class in `Events`:
+These events also exist under their PocketMine names. Listen with the interface in `net.BlockNes.event.*` or with the class in `Events`:
 
 | Event | Fired when | Cancel |
 | --- | --- | --- |
-| `LevelInitEvent` | a world is created for the first time (its folder was not on disk). Overworld and Nether, at startup | no |
-| `LevelLoadEvent` / `LevelUnloadEvent` | same moment as `WorldLoad` / `WorldUnload` | no (BlockNes always unloads) |
-| `FurnaceBurnEvent` | a furnace is about to burn fuel. `burnTime` *(edit)*. Cancelled = no fuel is used | yes |
-| `FurnaceSmeltEvent` | a furnace finishes an item. `result` *(edit)*. Cancelled = the item stays in the furnace | yes |
-| `PlayerCreationEvent` | a new session opens, before the player object is created. `address`, `port`, `clientId` | no |
-| `PlayerGlassBottleEvent` | a player fills a glass bottle from a cauldron (not from water yet) | yes |
-| `EntityEatBlockEvent` | a player eats a cake slice | yes |
-| `EntityLevelChangeEvent` | a player changes world or dimension (`origin`, `target`). Fired before `PlayerChangeDimension` | yes |
-| `EntityMotionEvent` | a push (knockback from mobs, projectiles or explosions) is about to be sent to a player. `getVector()` | yes |
-| `EntityInventoryChangeEvent` | a player's slot is about to change. `newItem` *(edit)* | yes |
-| `BlockEvent`, `ChunkEvent`, `LevelEvent`, `InventoryEvent`, `PlayerBucketEvent`, `ServerEvent`, `EntityCombustEvent` | base types: listen to them to get every event of that family | - |
+| `LevelInitEvent` (`Events.LevelInit`) | a world is created for the first time (its folder was not on disk). Overworld and Nether, at startup | no |
+| `LevelLoadEvent` / `LevelUnloadEvent` | same moment as `WorldLoad` / `WorldUnload` | `LevelUnloadEvent`: yes, except at shutdown |
+| `FurnaceBurnEvent` (`Events.FurnaceBurnFuel`) | a furnace is about to burn fuel. `burnTime` *(edit)*. Cancelled = no fuel is used | yes |
+| `FurnaceSmeltEvent` (`Events.SmeltItem`) | a furnace finishes an item. `result` *(edit)*. Cancelled = the item stays in the furnace | yes |
+| `PlayerCreationEvent` (`Events.PlayerCreation`) | a new session opens, before the player object is created. `address`, `port`, `clientId` | no |
+| `PlayerGlassBottleEvent` (`Events.PlayerGlassBottle`) | a player fills a glass bottle from a water block or cauldron | yes |
+| `EntityEatBlockEvent` (`Events.EntityEatBlock`) | a player eats a cake slice | yes |
+| `EntityEatEvent` | base of `EntityEatBlockEvent` and `EntityEatItemEvent`: listen to it to get both. Cancelled = nothing is eaten | yes |
+| `EntityLevelChangeEvent` (`Events.EntityLevelChange`) | a player changes world or dimension (`origin`, `target`). Fired before `PlayerChangeDimension` | yes |
+| `EntityMotionEvent` (`Events.EntityMotion`) | a push (knockback from mobs, projectiles or explosions) is about to be sent to a player. `getVector()` | yes |
+| `EntityInventoryChangeEvent` (`Events.EntityInventoryChange`) | a player's slot is about to change. `newItem` *(edit)* | yes |
+| `BlockEvent`, `ChunkEvent`, `LevelEvent`, `InventoryEvent`, `PlayerBucketEvent`, `ServerEvent`, `EntityCombustEvent` | base interfaces: listen to them to get the events of that family. `EntityCombustEvent` covers `Events.EntityCombustByBlock` and `Events.EntityCombustByEntity`, but not `Events.EntityCombust` | - |
 
-Not fired yet, because BlockNes has no mechanic for them: `CreeperPowerEvent`, `EntityGenerateEvent`, `ItemFrameDropItemEvent`, `EntityEatEvent`, and `PlayerGlassBottleEvent` when a bottle fills from water.
+`EntityGenerate` (mobs that come out of a spawner) and `ItemFrameDropItem` (items taken out of item frames) are in the Mobs and Blocks tables. `EntityEatEvent` is the base of `EntityEatItem` and `EntityEatBlock`, so listen to it to get both. For sheep eating grass, use `MobEatBlock`.
 
 ### Notes about events
 
@@ -1129,9 +1196,91 @@ Not fired yet, because BlockNes has no mechanic for them: `CreeperPowerEvent`, `
 
 ---
 
+## Entity classes
+
+Each entity has a class in `net.BlockNes.entity`, named like its entity (`Zombie`, `Cow`, `Arrow`...). `NETWORK_ID` is the id the client uses: `Zombie.NETWORK_ID` is `32`.
+
+Get the class of a mob in the world with `entityOf(mob)` (API 1.8). It returns `null` if the mob has no class:
+
+```java
+import net.BlockNes.entity.*;
+
+for (Mob m : mobsIn(0)) {
+    Entity e = entityOf(m);
+    if (e instanceof Living) {
+        float health = ((Living) e).getHealth();     // the real health of the mob
+        if (e instanceof Zombie) broadcast(color("&2A zombie with " + health + " HP"));
+    }
+}
+```
+
+| Member | Defined in | What it does |
+| --- | --- | --- |
+| `getNetworkId()` | `Entity` | The network id of the class, or `-1` if it has none |
+| `getName()` | `Entity` | A readable name, for example `Zombie Villager` for `ZombieVillager` |
+| `getHandle()` | `Entity` | The server object the class wraps: the `Mob` for `entityOf` |
+| `getHealth()`, `getMaxHealth()`, `isAlive()` | `Living` | The real health of a mob in the world (`0` for types that are not mobs) |
+
+These are the classes in `Entities`, with their network ids. `entityOf(mob)` returns the class of a mob whose type has that id (the `yes` rows). The `no` rows have no mob type, so only `Entities.create(id, handle)` makes them:
+
+| Id | Class | Extends | From `entityOf(mob)` |
+| --- | --- | --- | --- |
+| 10 | `Chicken` | `Animal` | yes |
+| 11 | `Cow` | `Animal` | yes |
+| 12 | `Pig` | `Animal` | yes |
+| 13 | `Sheep` | `Animal` | yes |
+| 14 | `Wolf` | `Animal` | yes |
+| 15 | `Villager` | `Creature` | yes |
+| 16 | `Mooshroom` | `Animal` | yes |
+| 17 | `Squid` | `WaterAnimal` | yes |
+| 18 | `Rabbit` | `Animal` | yes |
+| 19 | `Bat` | `FlyingAnimal` | yes |
+| 20 | `IronGolem` | `Animal` | yes |
+| 21 | `SnowGolem` | `Animal` | yes |
+| 22 | `Ocelot` | `Animal` | yes |
+| 32 | `Zombie` | `Monster` | yes |
+| 33 | `Creeper` | `Monster` | yes |
+| 34 | `Skeleton` | `Monster` | yes |
+| 35 | `Spider` | `Monster` | yes |
+| 36 | `PigZombie` | `Monster` | yes |
+| 37 | `Slime` | `Living` | yes |
+| 38 | `Enderman` | `Monster` | yes |
+| 39 | `Silverfish` | `Monster` | yes |
+| 40 | `CaveSpider` | `Monster` | yes |
+| 41 | `Ghast` | `FlyingAnimal` | yes |
+| 42 | `LavaSlime` | `Living` | yes |
+| 43 | `Blaze` | `Monster` | yes |
+| 44 | `ZombieVillager` | `Zombie` | yes |
+| 45 | `Witch` | `Monster` | yes |
+| 46 | `Stray` | `Skeleton` | yes |
+| 47 | `Husk` | `Zombie` | yes |
+| 64 | `Item` | `Entity` | no |
+| 65 | `PrimedTNT` | `Entity` | no |
+| 66 | `FallingSand` | `Entity` | no |
+| 68 | `ThrownExpBottle` | `Projectile` | no |
+| 69 | `XPOrb` | `Entity` | no |
+| 77 | `FishingHook` | `Projectile` | no |
+| 80 | `Arrow` | `Projectile` | no |
+| 81 | `Snowball` | `Projectile` | no |
+| 82 | `Egg` | `Projectile` | no |
+| 83 | `Painting` | `Hanging` | no |
+| 84 | `Minecart` | `Vehicle` | no |
+| 86 | `ThrownPotion` | `Projectile` | no |
+| 90 | `Boat` | `Vehicle` | no |
+| 93 | `Lightning` | `Entity` | no |
+| 96 | `MinecartHopper` | `Minecart` | no |
+| 97 | `MinecartTNT` | `Minecart` | no |
+| 98 | `MinecartChest` | `Minecart` | no |
+
+The `no` rows are not mobs (for example `Arrow`, `Boat` or `Minecart`): their class only gives you the id and the name, and their behaviour lives in the server's own code. `Human` and the abstract classes (`Entity`, `Living`, `Creature`, `Monster`, `Animal`...) are types too, and `NPC` is an interface.
+
+`Attribute`, `AttributeMap`, `Effect` and `InstantEffect` are PocketMine-style types for attributes and status effects. The server does not use them yet.
+
+---
+
 ## API 1.6 additions (inside `Plugin`)
 
-API 1.6 adds a **PocketMine-style facade** so that code written for PocketMine-MP is easy to port. None of it is required: the shorter methods of `Plugin` do the same things. A plugin that uses these classes should declare `api=1.6` or higher.
+API 1.6 adds a **PocketMine-style facade** so that code written for PocketMine is easy to port. None of it is required: the shorter methods of `Plugin` do the same things. A plugin that uses these classes should declare `api=1.6` or higher.
 
 | Class | Package | What it is |
 | --- | --- | --- |
@@ -1211,13 +1360,13 @@ When your plugin is disabled, the metadata it set is removed.
 
 **Player extras.** `getPing()`, `getIp()`, `getFood()`, `getXpLevel()`, `getXpProgress()`, `hasPermission(node)`, `sendTitle(title, subtitle)`, `addTitle(title, subtitle, fadeIn, stay, fadeOut)`.
 
-**Other PocketMine-named methods** exist on `PluginManager` (`getPlugin`, `getPlugins`, `isPluginEnabled`, `enablePlugin`, `disablePlugin`, `callEvent`, `registerEvents`, `unregisterEvents`, `addPermission`, `removePermission`, `getPermission`, `getPermissions`) and on `CommandMap` (`getCommand`, `getCommands`, `register`, `unregister`, `dispatch`).
+**Other PocketMine-style methods** exist on `PluginManager` (`getPlugin`, `getPlugins`, `isPluginEnabled`, `enablePlugin`, `disablePlugin`, `callEvent`, `registerEvents`, `unregisterEvents`, `addPermission`, `removePermission`, `getPermission`, `getPermissions`) and on `CommandMap` (`getCommand`, `getCommands`, `register`, `unregister`, `dispatch`).
 
 ---
 
 ## API 1.7 additions (inside `Plugin`)
 
-API 1.7 is the current version (`api=1.7`). Plugins built for older versions keep working.
+API 1.7 (`api=1.7`) added the items below. Plugins built for older versions keep working.
 
 - **New events.** The events added with API 1.7 (BlockNes 1.2.0 and the releases just before it) are part of it, for example `ProjectileHit`, `PlayerBucketFill`, `PlayerBucketEmpty`, `PlayerPickupExpOrb`, `PlayerLogin`, `PlayerUseFishingRod`, `ItemSpawn`, `ItemDespawn`, `RemoteServerCommand`, `PlayerDamageByMob`, `EntityDamageByChildEntity`, `EntityDamageByBlock`, `EntityCombustByBlock`, `EntityCombustByEntity`, `EntityEffectAdd`, `EntityEffectRemove`, `InventoryPickupArrow`, `EntityArmorChange`, `EntityEatItem`, `EntityDrinkPotion`, `EntityBlockChange`, `SpawnChange`, `LowMemory` and `QueryRegenerate`, plus the cancellable `PlayerAttack`, `VehicleMount` and `VehicleDestroy`, and `ServerStart`, `ServerStop`, `ConnectionAttempt`, `ConnectionClose`, `WorldLoad`, `WorldUnload`, `TimeChange`, `MobDespawn` and `SmeltItem`. See [Events](#events).
 - **`Plugin.tr(key, args...)`**: translate your own messages with `lang/<code>.properties` inside the jar (see [Translations](#translations)).
@@ -1227,11 +1376,27 @@ API 1.7 is the current version (`api=1.7`). Plugins built for older versions kee
 
 ---
 
+## API 1.8 additions (inside `Plugin`)
+
+API 1.8 makes the common calls shorter, and adds the entity classes and the events of [Entity classes](#entity-classes). Plugins built for older versions keep working. A plugin that uses the calls below should declare `api=1.8`.
+
+| Call | What it does |
+| --- | --- |
+| `command("name")` | Starts the chained builder for a command: `describe`, `usage`, `aliases`, `permission`, `opOnly`, then `run` or `executor`. See [Commands](#commands) |
+| `playerOf(sender)` | The `Player` behind a command sender, or `null` for the console |
+| `entityOf(mob)` | The entity class of a mob (`Zombie`, `Cow`...), or `null`. See [Entity classes](#entity-classes) |
+
+New events, in the tables of [Events](#events): `EntityGenerate` (a mob that comes out of a spawner), `ItemFrameDropItem`, `ItemFrameRotate` and `MobSpawnerChange`.
+
+New types, in `net.BlockNes.entity`: `Entity`, `Living`, one class per entity, and `Attribute`, `AttributeMap`, `Effect` and `InstantEffect`.
+
+---
+
 ## Limits, errors and performance
 
 **Errors never stop the server.** If a handler, command, task or callback throws, the error is logged with the plugin's name and the stack trace; the other handlers keep running. For a command, the sender is told that an error happened.
 
-**Optional limits.** By default there are no limits (like PocketMine-MP). The server owner can turn them on in `server.properties`:
+**Optional limits.** By default there are no limits (like PocketMine). The server owner can turn them on in `server.properties`:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -1264,7 +1429,7 @@ Two plugins that talk to each other through a **service**. This is real, tested 
 name=Eco
 main=eco.EcoPlugin
 version=1.0
-api=1.7
+api=1.8
 ```
 
 `eco/Economy.java` (the shared interface, in Eco's jar):
@@ -1319,7 +1484,7 @@ name=Shop
 main=shop.ShopPlugin
 version=1.0
 depend=Eco
-api=1.7
+api=1.8
 ```
 
 `shop/ShopPlugin.java`:
@@ -1401,7 +1566,7 @@ public class Tour extends Plugin {
         registerPermission("tour.admin", "Use /give2", PermissionDefault.OP);
 
         // ---- commands (lambda) ----
-        command("kit", "Get a starter kit", "", "tour.kit", (sender, args) -> {
+        command("kit").describe("Get a starter kit").permission("tour.kit").run((sender, args) -> {
             Player p = playerExact(sender.name());
             if (p == null) { sender.send("Players only"); return; }
             if (!kitCooldown.tryUse(p.name, cfg.getInt("kit-seconds", 60) * 1000L)) {
@@ -1488,7 +1653,7 @@ public class Tour extends Plugin {
 ## Things to know (limitations)
 
 - **Client version.** The server speaks Minecraft PE **0.15.10**. Block and item ids are those of that version. The client has no title, boss bar or scoreboard packets, so the [HUD](#hud-scoreboard-titles-boss-bars) is emulated with text channels, and menus show no title.
-- **`BlockFade` and `EntityTransform`** exist as classes but are **never fired** yet.
+- **`BlockFade`**, **`CreeperPower`**, and **`EntityTransform`** are now dispatched by their implemented mechanics. `EntityGenerate` (spawners) and `ItemFrameDropItem` (item frames) are dispatched too, now that BlockNes has spawners and item frames.
 - **`PlayerMove`** fires only when the player changes block. **`PlayerJump`** is a guess from the position.
 - **`PlayerTeleport`** is fired by `/tp` and `teleportChecked(...)` only. `teleport(...)` and the server's own teleports (portals, respawn) do not fire it.
 - **`WeatherChange`** is not fired by random weather, only by `/weather` and `setWeather(...)`. **`TimeChange`** is not fired by the normal clock.
@@ -1496,6 +1661,7 @@ public class Tour extends Plugin {
 - **Chat.** Players cannot send `§` color codes: the server removes them from their messages.
 - **Worlds.** There are two dimensions (`0` overworld and `1` nether). `/spawn <world>` can change which folder is the overworld; plugins get `WorldUnload` for the old one and `WorldLoad` for the new one.
 - **Reloading.** `/plugins reload` creates new class loaders; static state of the old plugin is lost.
+- **Entities.** `entityOf(mob)` gives the class of a mob, but only the health of a `Living` mob is read from the server (`getHealth()`). The `Attribute`, `AttributeMap` and `Effect` types are not used by the server yet.
 - **Threads.** Only the server thread may touch players, the world, menus or tasks. Inside `runAsync(...)` and `AsyncTask.onRun()` use only your own plain Java objects.
 
 ---
@@ -1508,7 +1674,7 @@ public class Tour extends Plugin {
 | The jar is ignored and the console says the jar has no `plugin.properties` | The file must be at the **root** of the jar, not inside a folder. Check with `jar tf MyPlugin.jar` |
 | "needs name and main" | `name` and `main` are both required in `plugin.properties` |
 | The name is rejected | Only letters, digits, `_` and `-` are allowed in `name` |
-| "api ... newer than the server" | The plugin asks for an API newer than `1.7`. Lower `api=` or update the server |
+| "api ... newer than the server" | The plugin asks for an API newer than `1.8`. Lower `api=` or update the server |
 | `ClassNotFoundException` for your main class | `main=` must be the full class name (`package.Class`) and the class must be in the jar |
 | The class is found but the plugin does not start | The main class must extend `Plugin` (or `PluginBase`) and have a public no-argument constructor |
 | The plugin is not loaded because of its dependencies | The plugins in `depend` are missing, or failed to load. Check the log above it |
@@ -1521,8 +1687,11 @@ public class Tour extends Plugin {
 | Config is empty and the log warns about `config.properties` | Put a `config.properties` at the root of your jar |
 | The server lags | A handler or task is slow. The log warns after 100 calls slower than 100 ms. Move slow work to `runAsync` |
 | An async callback never runs | The plugin was disabled before the work finished, or the work threw an exception (check the log) |
+| Two plugins with the same name, only one loads | Names must be unique across jars, folders and `.java` files. The second one is skipped with a warning. Rename one of them |
+| A source plugin keeps using old code | Delete `plugins/.cache/<name>/` and run `/plugins reload`. The cache is only rebuilt when a `.java` file changes (size or modification time) |
+| Colors show as `&a` in chat | `message` and `broadcast` do not convert `&`. Wrap the text in `color(...)`, or use the `...f` variants (`messagef`, `broadcastf`) |
 | The scoreboard is on the wrong side | The plugin decides: `hudPosition(player, ...)`, `hudScreenWidth(player, ...)` and `hudOffsetY(player, ...)` |
 
 ---
 
-*This guide describes API 1.7 of BlockNes 1.2.0. The classes mentioned live in `server/src/main/java/net/BlockNes/plugin/` (`Plugin`, `Events`, `PluginManager`...), `event/`, `scheduler/`, `command/` and `level/`; read them for the exact signatures.*
+*This guide describes API 1.8 of BlockNes 1.2.3. The classes mentioned live in `server/src/main/java/net/BlockNes/plugin/` (`Plugin`, `Events`, `PluginManager`...), `event/`, `scheduler/`, `command/` and `level/`; read them for the exact signatures.*
