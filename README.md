@@ -204,27 +204,6 @@ Plugins are `.jar` files in `plugins/`, or plain source code (a folder with `plu
 
 The plugin API is documented in **[Plugins.md](Plugins.md)**: events, commands, scheduler, menus, recipes, regions, per-player data, the HUD, and how to compile a plugin. The examples in `plugins-ejemplo/` show it in use.
 
-## 🛠️ Building from source
-
-You only need this if you want to change the server. Releases already contain the jars.
-
-- A **JDK** (`javac` and `jar`). JDK 17 or newer is the safe choice (the build was checked with JDK 21); the classes are compiled for Java 11 and the server runs on Java 17+.
-- RakNetLib next to this project (`../raknetlib`). If it is missing, the script clones it from [GitHub](https://github.com/servid124-ux/RakNetLib), so `git` is needed in that case.
-
-```sh
-sh build.sh
-```
-
-It builds RakNetLib first and then the server, and writes:
-
-| Output | What it is |
-| --- | --- |
-| `server/target/server.jar` | The server, with RakNetLib inside. Run it with `java -jar` |
-| `server/target/server-plugin-api.jar` | Compile-only jar for plugin authors (the server classes without the launcher class `BlockNes`) |
-
-Environment variables: `RAKNETLIB_DIR=/path` uses that copy of RakNetLib as it is (nothing is cloned or updated); `RAKNETLIB_REPO=<url>` changes the repository it is cloned from.
-
-The source is in `server/src/main/java/net/BlockNes/`. [ESTRUCTURA.md](server/src/main/java/net/BlockNes/ESTRUCTURA.md) explains the packages (in Spanish), and `network/protocolo/LEEME.md` explains the packet layer.
 
 ## 🆘 Troubleshooting
 
