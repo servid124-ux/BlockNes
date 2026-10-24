@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="logo/logo.svg" alt="BlockNes logo" width="150">
+<img src="logo.svg" alt="BlockNes logo" width="150">
 
 # 🧱 BlockNes
 
