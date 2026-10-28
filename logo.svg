@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="logo-title">
+  <title id="logo-title">BlockNes logo</title>
+  <rect width="256" height="256" rx="56" fill="#24292f"/>
+  <g transform="translate(0 -4)">
+    <polygon points="128,48 208,92 128,136 48,92" fill="#6abf4b"/>
+    <polygon points="48,92 128,136 128,152 48,108" fill="#5aa63c"/>
+    <polygon points="48,108 128,152 128,216 48,172" fill="#8a5a32"/>
+    <polygon points="128,136 208,92 208,108 128,152" fill="#4a8f33"/>
+    <polygon points="128,152 208,108 208,172 128,216" fill="#6e4623"/>
+  </g>
+</svg>
